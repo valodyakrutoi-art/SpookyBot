@@ -4,9 +4,12 @@ import json
 import os
 import traceback
 from aiohttp import web
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    Update, ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, ContextTypes, filters
 )
 from telethon import TelegramClient
@@ -25,18 +28,207 @@ USER_COMMANDS_FILE = "user_commands.json"
 MAX_CUSTOM_COMMANDS = 5
 # ====================================================
 
-CHOOSE_VERSION, CHOOSE_TYPE = range(2)
+CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY = range(4)
 
 ANARCHY_TYPES = {
     "Соло": 1, "Дуо": 2, "Трио": 3,
     "Квадро": 4, "Пента": 5, "Клан": 6,
 }
 
+# Версии теперь так:
+#   трёхзначные номера анархий (1xx-6xx)   -> 1.21
+#   четырёхзначные номера анархий (1xxx-6xxx) -> 1.16.5
+VERSION_3DIGIT = "1.21"
+VERSION_4DIGIT = "1.16.5"
+
+EVENT_TYPES = [
+    "Метеоритный дождь", "Мистический сундук", "Адская резня",
+    "Бикини боттом", "Горящий череп", "Маяк убийца",
+    "Сундуки смерти", "Вулкан", "Гейзер",
+]
+
+# Эти типы ивентов не имеют выбора редкости
+NO_RARITY_EVENTS = {"Адская резня", "Бикини боттом", "Горящий череп"}
+
+RARITIES = ["Легендарный", "Элитный", "Богатый", "Солидный", "Обычный"]
+RARITY_ORDER = {name: i for i, name in enumerate(RARITIES)}
+
+THEMES = [
+    "Чёрная", "Зелёная", "Жёлтая", "Синяя", "Голубая",
+    "Фиолетовая", "Красная", "Оранжевая", "Белая", "Дефолтная",
+]
+THEME_ICON = {
+    "Чёрная": "⚫", "Зелёная": "🟢", "Жёлтая": "🟡", "Синяя": "🔵",
+    "Голубая": "🩵", "Фиолетовая": "🟣", "Красная": "🔴",
+    "Оранжевая": "🟠", "Белая": "⚪", "Дефолтная": "👻",
+}
+
+LANGUAGES = ["RU", "EN", "KZ", "UA", "BY"]
+
 events_data = {"1.16.5": [], "1.21": []}
 
-# ==================== ХРАНИЛИЩЕ КОМАНД ====================
+# ==================== ПЕРЕВОДЫ ====================
 
-def load_user_commands() -> dict:
+TR = {
+    "RU": {
+        "welcome": "👻 Привет! Я SpookyEvents — бот для отслеживания ивентов на анархиях.\n\nИспользуй кнопки ниже для навигации.",
+        "no_events": "📭 Нет активных ивентов: {label}",
+        "events_header": "🎯 Ивенты — {label}:\n\n",
+        "btn_add": "➕ Добавить команду",
+        "btn_del": "🗑 Удалить команду",
+        "btn_settings": "⚙️ Настройки",
+        "btn_cancel": "❌ Отмена",
+        "btn_skip": "Пропустить",
+        "btn_done": "✅ Готово",
+        "choose_version": "➕ *Добавление быстрой команды* ({n}/{max})\n\nВыбери версию сервера:",
+        "choose_anarchy_type": "✅ Версия: *{version}*\n\nТеперь выбери тип анархии:",
+        "choose_events": "✅ Тип: *{type} {version}*\n\nВыбери ивенты (можно несколько) или «Пропустить» — все ивенты:",
+        "choose_rarity": "Теперь выбери редкость ивентов или «Пропустить» — все редкости:",
+        "cmd_added": "✅ Команда добавлена!\nТеперь кнопка появилась в меню.",
+        "cmd_limit": "❌ Достигнут лимит команд ({max}).",
+        "cmd_exists": "ℹ️ Такая команда уже есть у тебя.",
+        "cancelled": "❌ Отменено.",
+        "no_cmds_to_del": "У тебя пока нет быстрых команд для удаления.",
+        "choose_del": "🗑 Выбери команду для удаления:",
+        "cmd_deleted": "✅ Команда удалена.",
+        "settings_title": "⚙️ *Настройки*",
+        "settings_sort": "Сортировка: {val}",
+        "settings_lang": "Язык: {val}",
+        "settings_theme": "Тема: {val}",
+        "sort_anarchy": "По анархиям",
+        "sort_rarity": "По редкостям",
+        "no_cmd": "⚠️ Такой команды у тебя нет.",
+    },
+    "EN": {
+        "welcome": "👻 Hi! I'm SpookyEvents — a bot for tracking anarchy events.\n\nUse the buttons below to navigate.",
+        "no_events": "📭 No active events: {label}",
+        "events_header": "🎯 Events — {label}:\n\n",
+        "btn_add": "➕ Add command",
+        "btn_del": "🗑 Delete command",
+        "btn_settings": "⚙️ Settings",
+        "btn_cancel": "❌ Cancel",
+        "btn_skip": "Skip",
+        "btn_done": "✅ Done",
+        "choose_version": "➕ *Add quick command* ({n}/{max})\n\nChoose server version:",
+        "choose_anarchy_type": "✅ Version: *{version}*\n\nNow choose anarchy type:",
+        "choose_events": "✅ Type: *{type} {version}*\n\nChoose events (multiple allowed) or «Skip» — all events:",
+        "choose_rarity": "Now choose event rarity or «Skip» — all rarities:",
+        "cmd_added": "✅ Command added!\nA new button appeared in the menu.",
+        "cmd_limit": "❌ Command limit reached ({max}).",
+        "cmd_exists": "ℹ️ You already have this command.",
+        "cancelled": "❌ Cancelled.",
+        "no_cmds_to_del": "You don't have any quick commands to delete yet.",
+        "choose_del": "🗑 Choose a command to delete:",
+        "cmd_deleted": "✅ Command deleted.",
+        "settings_title": "⚙️ *Settings*",
+        "settings_sort": "Sort: {val}",
+        "settings_lang": "Language: {val}",
+        "settings_theme": "Theme: {val}",
+        "sort_anarchy": "By anarchy",
+        "sort_rarity": "By rarity",
+        "no_cmd": "⚠️ You don't have this command.",
+    },
+    "KZ": {
+        "welcome": "👻 Сәлем! Мен SpookyEvents — анархиядағы ивенттерді бақылайтын бот.\n\nҚозғалу үшін төмендегі батырмаларды пайдалан.",
+        "no_events": "📭 Белсенді ивенттер жоқ: {label}",
+        "events_header": "🎯 Ивенттер — {label}:\n\n",
+        "btn_add": "➕ Команда қосу",
+        "btn_del": "🗑 Команданы өшіру",
+        "btn_settings": "⚙️ Баптаулар",
+        "btn_cancel": "❌ Бас тарту",
+        "btn_skip": "Өткізіп жіберу",
+        "btn_done": "✅ Дайын",
+        "choose_version": "➕ *Жылдам команда қосу* ({n}/{max})\n\nСервер нұсқасын таңда:",
+        "choose_anarchy_type": "✅ Нұсқа: *{version}*\n\nЕнді анархия түрін таңда:",
+        "choose_events": "✅ Түрі: *{type} {version}*\n\nИвенттерді таңда (бірнешеу болуы мүмкін) немесе «Өткізіп жіберу» — барлық ивенттер:",
+        "choose_rarity": "Енді ивент сиректігін таңда немесе «Өткізіп жіберу» — барлық сиректіктер:",
+        "cmd_added": "✅ Команда қосылды!\nМәзірде жаңа батырма пайда болды.",
+        "cmd_limit": "❌ Команда лимитіне жетті ({max}).",
+        "cmd_exists": "ℹ️ Бұл команда сізде бар.",
+        "cancelled": "❌ Бас тартылды.",
+        "no_cmds_to_del": "Өшіруге жылдам командаларыңыз әзірге жоқ.",
+        "choose_del": "🗑 Өшіру үшін команданы таңда:",
+        "cmd_deleted": "✅ Команда өшірілді.",
+        "settings_title": "⚙️ *Баптаулар*",
+        "settings_sort": "Сұрыптау: {val}",
+        "settings_lang": "Тіл: {val}",
+        "settings_theme": "Тақырып: {val}",
+        "sort_anarchy": "Анархия бойынша",
+        "sort_rarity": "Сирек бойынша",
+        "no_cmd": "⚠️ Бұндай команда сізде жоқ.",
+    },
+    "UA": {
+        "welcome": "👻 Привіт! Я SpookyEvents — бот для відстеження івентів на анархіях.\n\nВикористовуй кнопки нижче для навігації.",
+        "no_events": "📭 Немає активних івентів: {label}",
+        "events_header": "🎯 Івенти — {label}:\n\n",
+        "btn_add": "➕ Додати команду",
+        "btn_del": "🗑 Видалити команду",
+        "btn_settings": "⚙️ Налаштування",
+        "btn_cancel": "❌ Скасувати",
+        "btn_skip": "Пропустити",
+        "btn_done": "✅ Готово",
+        "choose_version": "➕ *Додавання швидкої команди* ({n}/{max})\n\nОбери версію сервера:",
+        "choose_anarchy_type": "✅ Версія: *{version}*\n\nТепер обери тип анархії:",
+        "choose_events": "✅ Тип: *{type} {version}*\n\nОбери івенти (можна декілька) або «Пропустити» — всі івенти:",
+        "choose_rarity": "Тепер обери рідкість івентів або «Пропустити» — всі рідкості:",
+        "cmd_added": "✅ Команду додано!\nУ меню з'явилась нова кнопка.",
+        "cmd_limit": "❌ Досягнуто ліміт команд ({max}).",
+        "cmd_exists": "ℹ️ Така команда вже є у тебе.",
+        "cancelled": "❌ Скасовано.",
+        "no_cmds_to_del": "У тебе поки немає швидких команд для видалення.",
+        "choose_del": "🗑 Обери команду для видалення:",
+        "cmd_deleted": "✅ Команду видалено.",
+        "settings_title": "⚙️ *Налаштування*",
+        "settings_sort": "Сортування: {val}",
+        "settings_lang": "Мова: {val}",
+        "settings_theme": "Тема: {val}",
+        "sort_anarchy": "За анархіями",
+        "sort_rarity": "За рідкістю",
+        "no_cmd": "⚠️ Такої команди у тебе немає.",
+    },
+    "BY": {
+        "welcome": "👻 Прывітанне! Я SpookyEvents — бот для адсочвання івэнтаў на анархіях.\n\nВыкарыстоўвай кнопкі ніжэй для навігацыі.",
+        "no_events": "📭 Няма актыўных івэнтаў: {label}",
+        "events_header": "🎯 Івэнты — {label}:\n\n",
+        "btn_add": "➕ Дадаць каманду",
+        "btn_del": "🗑 Выдаліць каманду",
+        "btn_settings": "⚙️ Налады",
+        "btn_cancel": "❌ Адмена",
+        "btn_skip": "Прапусціць",
+        "btn_done": "✅ Гатова",
+        "choose_version": "➕ *Дадаванне хуткай каманды* ({n}/{max})\n\nАбяры версію сервера:",
+        "choose_anarchy_type": "✅ Версія: *{version}*\n\nЦяпер абяры тып анархіі:",
+        "choose_events": "✅ Тып: *{type} {version}*\n\nАбяры івэнты (можна некалькі) або «Прапусціць» — усе івэнты:",
+        "choose_rarity": "Цяпер абяры рэдкасць івэнтаў або «Прапусціць» — усе рэдкасці:",
+        "cmd_added": "✅ Каманда дададзена!\nУ меню з'явілася новая кнопка.",
+        "cmd_limit": "❌ Дасягнуты ліміт каманд ({max}).",
+        "cmd_exists": "ℹ️ Такая каманда ў цябе ўжо ёсць.",
+        "cancelled": "❌ Адменена.",
+        "no_cmds_to_del": "У цябе пакуль няма хуткіх каманд для выдалення.",
+        "choose_del": "🗑 Абяры каманду для выдалення:",
+        "cmd_deleted": "✅ Каманда выдалена.",
+        "settings_title": "⚙️ *Налады*",
+        "settings_sort": "Сартаванне: {val}",
+        "settings_lang": "Мова: {val}",
+        "settings_theme": "Тэма: {val}",
+        "sort_anarchy": "Па анархіях",
+        "sort_rarity": "Па рэдкасці",
+        "no_cmd": "⚠️ Такой каманды ў цябе няма.",
+    },
+}
+
+
+def t(lang: str, key: str, **kwargs) -> str:
+    lang = lang if lang in TR else "RU"
+    text = TR[lang].get(key, TR["RU"].get(key, key))
+    return text.format(**kwargs) if kwargs else text
+
+# ==================== ХРАНИЛИЩЕ ====================
+
+DEFAULT_SETTINGS = {"sort": "anarchy", "lang": "RU", "theme": "Дефолтная"}
+
+
+def load_all() -> dict:
     if os.path.exists(USER_COMMANDS_FILE):
         try:
             with open(USER_COMMANDS_FILE, "r", encoding="utf-8") as f:
@@ -45,54 +237,124 @@ def load_user_commands() -> dict:
             return {}
     return {}
 
-def save_user_commands(data: dict):
+
+def save_all(data: dict):
     with open(USER_COMMANDS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def get_user_cmds(user_id: int) -> list:
-    return load_user_commands().get(str(user_id), [])
 
-def add_user_cmd(user_id: int, version: str, anarchy_type: str) -> bool:
-    data = load_user_commands()
+def get_user_entry(user_id: int) -> dict:
+    """Returns (and migrates if needed) the stored entry for a user."""
+    data = load_all()
     key = str(user_id)
-    cmds = data.get(key, [])
+    entry = data.get(key)
+    if entry is None:
+        entry = {"commands": [], "settings": dict(DEFAULT_SETTINGS)}
+        data[key] = entry
+        save_all(data)
+    elif isinstance(entry, list):
+        # старый формат - список команд без настроек
+        entry = {"commands": entry, "settings": dict(DEFAULT_SETTINGS)}
+        data[key] = entry
+        save_all(data)
+    else:
+        entry.setdefault("commands", [])
+        entry.setdefault("settings", dict(DEFAULT_SETTINGS))
+        for k, v in DEFAULT_SETTINGS.items():
+            entry["settings"].setdefault(k, v)
+    return entry
+
+
+def save_user_entry(user_id: int, entry: dict):
+    data = load_all()
+    data[str(user_id)] = entry
+    save_all(data)
+
+
+def get_user_cmds(user_id: int) -> list:
+    return get_user_entry(user_id)["commands"]
+
+
+def get_user_settings(user_id: int) -> dict:
+    return get_user_entry(user_id)["settings"]
+
+
+def set_user_setting(user_id: int, key: str, value):
+    entry = get_user_entry(user_id)
+    entry["settings"][key] = value
+    save_user_entry(user_id, entry)
+
+
+def add_user_cmd(user_id: int, version: str, anarchy_type: str, events: list, rarity: str) -> bool:
+    entry = get_user_entry(user_id)
+    cmds = entry["commands"]
     if len(cmds) >= MAX_CUSTOM_COMMANDS:
         return False
-    entry = {"version": version, "type": anarchy_type}
-    if entry in cmds:
+    new_entry = {
+        "version": version, "type": anarchy_type,
+        "events": events or None,  # None = все ивенты
+        "rarity": rarity or None,  # None = все редкости
+    }
+    if new_entry in cmds:
         return False
-    cmds.append(entry)
-    data[key] = cmds
-    save_user_commands(data)
+    cmds.append(new_entry)
+    entry["commands"] = cmds
+    save_user_entry(user_id, entry)
     return True
+
+
+def delete_user_cmd(user_id: int, idx: int) -> bool:
+    entry = get_user_entry(user_id)
+    cmds = entry["commands"]
+    if 0 <= idx < len(cmds):
+        cmds.pop(idx)
+        entry["commands"] = cmds
+        save_user_entry(user_id, entry)
+        return True
+    return False
 
 # ==================== КЛАВИАТУРА ====================
 
 def cmd_label(cmd: dict) -> str:
-    return f"🔍 {cmd['type']} {cmd['version']}"
+    label = f"🔍 {cmd['type']} {cmd['version']}"
+    extras = []
+    if cmd.get("events"):
+        names = cmd["events"]
+        extras.append(names[0] if len(names) == 1 else f"{len(names)} ивентов")
+    if cmd.get("rarity"):
+        extras.append(cmd["rarity"])
+    if extras:
+        label += " (" + ", ".join(extras) + ")"
+    return label
+
 
 def build_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    settings = get_user_settings(user_id)
+    lang = settings["lang"]
     cmds = get_user_cmds(user_id)
     rows = [
         [KeyboardButton("/events1"), KeyboardButton("/events2")],
-        [KeyboardButton("/help"), KeyboardButton("➕ Добавить команду")],
+        [KeyboardButton("/help"), KeyboardButton(t(lang, "btn_add"))],
+        [KeyboardButton(t(lang, "btn_del")), KeyboardButton(t(lang, "btn_settings"))],
     ]
     custom_buttons = [KeyboardButton(cmd_label(c)) for c in cmds]
     for i in range(0, len(custom_buttons), 2):
-        rows.append(custom_buttons[i:i+2])
+        rows.append(custom_buttons[i:i + 2])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 # ==================== ПАРСИНГ ИВЕНТОВ ====================
 
-def get_version(num):
-    return "1.16.5" if len(str(num)) == 3 else "1.21"
+def get_version(num) -> str:
+    return VERSION_4DIGIT if len(str(num)) == 4 else VERSION_3DIGIT
+
 
 def filter_events(version: str, type_num: int) -> list:
     evs = events_data.get(version, [])
-    if version == "1.16.5":
-        return [e for e in evs if (e["anarchy_num"] // 100) == type_num]
-    else:
+    if version == VERSION_4DIGIT:
         return [e for e in evs if (e["anarchy_num"] // 1000) == type_num]
+    else:
+        return [e for e in evs if (e["anarchy_num"] // 100) == type_num]
+
 
 def parse_events(text):
     events = []
@@ -108,6 +370,12 @@ def parse_events(text):
         name_match = re.search(r"\]\s*(.+?)$", first)
         if not name_match:
             continue
+        rarity = None
+        rarity_match = re.search(r"\[(.+?)\]", first)
+        if rarity_match:
+            candidate = rarity_match.group(1).strip()
+            if candidate in RARITY_ORDER:
+                rarity = candidate
         loot = status = time_str = location = None
         for line in lines[1:]:
             line = line.strip()
@@ -123,6 +391,7 @@ def parse_events(text):
         events.append({
             "anarchy_num": num,
             "name": name_match.group(1).strip(),
+            "rarity": rarity,
             "loot_level": loot,
             "status": status,
             "time_str": time_str,
@@ -131,11 +400,18 @@ def parse_events(text):
         })
     return events
 
-def format_events(evs: list, version: str, type_name: str = None) -> str:
+
+def sort_events(evs: list, sort_mode: str) -> list:
+    if sort_mode == "rarity":
+        return sorted(evs, key=lambda e: (RARITY_ORDER.get(e.get("rarity"), len(RARITY_ORDER)), e["anarchy_num"]))
+    return sorted(evs, key=lambda e: e["anarchy_num"])
+
+
+def format_events(evs: list, version: str, lang: str, type_name: str = None) -> str:
     label = f"{type_name} {version}" if type_name else version
     if not evs:
-        return f"📭 Нет активных ивентов: {label}"
-    out = f"🎯 Ивенты — {label}:\n\n"
+        return t(lang, "no_events", label=label)
+    out = t(lang, "events_header", label=label)
     for e in evs:
         out += f"Анархия {e['anarchy_num']}:\n{e['raw_first_line']}\n"
         if e["loot_level"]:
@@ -150,89 +426,113 @@ def format_events(evs: list, version: str, type_name: str = None) -> str:
         out += "\n"
     return out
 
+
 async def send_long(update: Update, text: str, keyboard=None):
     kwargs = {"reply_markup": keyboard} if keyboard else {}
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i+4000], **kwargs)
+            await update.message.reply_text(text[i:i + 4000], **kwargs)
     else:
         await update.message.reply_text(text, **kwargs)
 
 # ==================== КОМАНДЫ БОТА ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = build_main_keyboard(update.effective_user.id)
-    await update.message.reply_text(
-        "👻 Привет! Я SpookyEvents — бот для отслеживания ивентов на анархиях.\n\n"
-        "Используй кнопки ниже для навигации.",
-        reply_markup=kb
-    )
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    kb = build_main_keyboard(user_id)
+    await update.message.reply_text(t(lang, "welcome"), reply_markup=kb)
+
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
     cmds = get_user_cmds(user_id)
     kb = build_main_keyboard(user_id)
     text = (
         "👻 *SpookyEvents Bot*\n\n"
-        "Я слежу за ивентами на серверах SpookyTime и показываю активные события.\n\n"
         "*Основные команды:*\n"
         "• /events1 — ивенты на версии 1.16.5\n"
         "• /events2 — ивенты на версии 1.21\n"
         "• /help — эта справка\n"
-        "• ➕ Добавить команду — создать быструю команду для нужного типа анархии\n\n"
-        "*Типы анархий:*\n"
-        "• Соло (100x / 1000x)\n"
-        "• Дуо (200x / 2000x)\n"
-        "• Трио (300x / 3000x)\n"
-        "• Квадро (400x / 4000x)\n"
-        "• Пента (500x / 5000x)\n"
-        "• Клан (600x / 6000x)\n\n"
+        f"• {t(lang, 'btn_add')}\n"
+        f"• {t(lang, 'btn_del')}\n"
+        f"• {t(lang, 'btn_settings')}\n\n"
     )
     if cmds:
         text += f"*Твои быстрые команды ({len(cmds)}/{MAX_CUSTOM_COMMANDS}):*\n"
         for c in cmds:
             text += f"• {cmd_label(c)}\n"
     else:
-        text += f"У тебя пока нет быстрых команд (макс. {MAX_CUSTOM_COMMANDS}).\nНажми ➕ Добавить команду."
+        text += f"У тебя пока нет быстрых команд (макс. {MAX_CUSTOM_COMMANDS})."
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
+
 async def events1(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = build_main_keyboard(update.effective_user.id)
-    await send_long(update, format_events(events_data.get("1.16.5", []), "1.16.5"), kb)
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    kb = build_main_keyboard(user_id)
+    evs = sort_events(events_data.get(VERSION_4DIGIT, []), settings["sort"])
+    await send_long(update, format_events(evs, VERSION_4DIGIT, settings["lang"]), kb)
+
 
 async def events2(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = build_main_keyboard(update.effective_user.id)
-    await send_long(update, format_events(events_data.get("1.21", []), "1.21"), kb)
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    kb = build_main_keyboard(user_id)
+    evs = sort_events(events_data.get(VERSION_3DIGIT, []), settings["sort"])
+    await send_long(update, format_events(evs, VERSION_3DIGIT, settings["lang"]), kb)
 
-# ==================== ДОБАВЛЕНИЕ КОМАНДЫ ====================
+# ==================== ДОБАВЛЕНИЕ БЫСТРОЙ КОМАНДЫ ====================
+
+def events_inline_kb(selected: set, lang: str) -> InlineKeyboardMarkup:
+    rows = []
+    for i, name in enumerate(EVENT_TYPES):
+        mark = "✅ " if name in selected else ""
+        rows.append([InlineKeyboardButton(f"{mark}{name}", callback_data=f"ev:{i}")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_skip"), callback_data="ev:skip")])
+    if selected:
+        rows.append([InlineKeyboardButton(t(lang, "btn_done"), callback_data="ev:done")])
+    return InlineKeyboardMarkup(rows)
+
+
+def rarity_inline_kb(lang: str) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(r, callback_data=f"rar:{r}")] for r in RARITIES]
+    rows.append([InlineKeyboardButton(t(lang, "btn_skip"), callback_data="rar:skip")])
+    return InlineKeyboardMarkup(rows)
+
 
 async def add_cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
     cmds = get_user_cmds(user_id)
     if len(cmds) >= MAX_CUSTOM_COMMANDS:
         await update.message.reply_text(
-            f"❌ У тебя уже {MAX_CUSTOM_COMMANDS} быстрых команд — это максимум.",
+            t(lang, "cmd_limit", max=MAX_CUSTOM_COMMANDS),
             reply_markup=build_main_keyboard(user_id)
         )
         return ConversationHandler.END
     version_kb = ReplyKeyboardMarkup(
-        [[KeyboardButton("1.16"), KeyboardButton("1.21")], [KeyboardButton("❌ Отмена")]],
+        [[KeyboardButton("1.16.5"), KeyboardButton("1.21")], [KeyboardButton(t(lang, "btn_cancel"))]],
         resize_keyboard=True
     )
     await update.message.reply_text(
-        f"➕ *Добавление быстрой команды* ({len(cmds)}/{MAX_CUSTOM_COMMANDS})\n\nВыбери версию сервера:",
+        t(lang, "choose_version", n=len(cmds), max=MAX_CUSTOM_COMMANDS),
         parse_mode="Markdown", reply_markup=version_kb
     )
     return CHOOSE_VERSION
 
+
 async def add_cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
     text = update.message.text.strip()
-    if text == "❌ Отмена":
+    if text == t(lang, "btn_cancel"):
         return await cancel(update, context)
-    if text == "1.16":
-        context.user_data["add_version"] = "1.16.5"
-    elif text == "1.21":
-        context.user_data["add_version"] = "1.21"
+    if text in (VERSION_4DIGIT, "1.16"):
+        context.user_data["add_version"] = VERSION_4DIGIT
+    elif text == VERSION_3DIGIT:
+        context.user_data["add_version"] = VERSION_3DIGIT
     else:
         await update.message.reply_text("Пожалуйста, выбери версию кнопкой.")
         return CHOOSE_VERSION
@@ -240,67 +540,253 @@ async def add_cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             [KeyboardButton("Соло"), KeyboardButton("Дуо"), KeyboardButton("Трио")],
             [KeyboardButton("Квадро"), KeyboardButton("Пента"), KeyboardButton("Клан")],
-            [KeyboardButton("❌ Отмена")]
+            [KeyboardButton(t(lang, "btn_cancel"))]
         ],
         resize_keyboard=True
     )
     await update.message.reply_text(
-        f"✅ Версия: *{context.user_data['add_version']}*\n\nТеперь выбери тип анархии:",
+        t(lang, "choose_anarchy_type", version=context.user_data['add_version']),
         parse_mode="Markdown", reply_markup=type_kb
     )
     return CHOOSE_TYPE
 
+
 async def add_cmd_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
     text = update.message.text.strip()
-    if text == "❌ Отмена":
+    if text == t(lang, "btn_cancel"):
         return await cancel(update, context)
     if text not in ANARCHY_TYPES:
         await update.message.reply_text("Пожалуйста, выбери тип анархии кнопкой.")
         return CHOOSE_TYPE
+    context.user_data["add_type"] = text
+    context.user_data["add_events"] = set()
     version = context.user_data.get("add_version")
+    await update.message.reply_text(
+        t(lang, "choose_events", type=text, version=version),
+        parse_mode="Markdown",
+        reply_markup=events_inline_kb(set(), lang)
+    )
+    return CHOOSE_EVENTS
+
+
+async def choose_events_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     user_id = update.effective_user.id
-    success = add_user_cmd(user_id, version, text)
+    lang = get_user_settings(user_id)["lang"]
+    selected = context.user_data.setdefault("add_events", set())
+    data = query.data.split(":", 1)[1]
+
+    if data == "skip":
+        context.user_data["add_events"] = set()
+        return await proceed_to_rarity(update, context, query)
+    if data == "done":
+        return await proceed_to_rarity(update, context, query)
+
+    idx = int(data)
+    name = EVENT_TYPES[idx]
+    if name in selected:
+        selected.discard(name)
+    else:
+        selected.add(name)
+    await query.edit_message_reply_markup(reply_markup=events_inline_kb(selected, lang))
+    return CHOOSE_EVENTS
+
+
+async def proceed_to_rarity(update: Update, context: ContextTypes.DEFAULT_TYPE, query):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    selected = context.user_data.get("add_events", set())
+    # Если выбранные ивенты не допускают редкость - сразу сохраняем
+    if selected and selected.issubset(NO_RARITY_EVENTS):
+        return await finalize_add_cmd(update, context, query, rarity=None)
+    await query.edit_message_text(
+        t(lang, "choose_rarity"),
+        reply_markup=rarity_inline_kb(lang)
+    )
+    return CHOOSE_RARITY
+
+
+async def choose_rarity_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split(":", 1)[1]
+    rarity = None if data == "skip" else data
+    return await finalize_add_cmd(update, context, query, rarity=rarity)
+
+
+async def finalize_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, query, rarity):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    version = context.user_data.get("add_version")
+    type_name = context.user_data.get("add_type")
+    events_sel = list(context.user_data.get("add_events", set())) or None
+
+    success = add_user_cmd(user_id, version, type_name, events_sel, rarity)
     kb = build_main_keyboard(user_id)
     if success:
-        await update.message.reply_text(
-            f"✅ Команда *{text} {version}* добавлена!\nТеперь кнопка «🔍 {text} {version}» появилась в меню.",
-            parse_mode="Markdown", reply_markup=kb
-        )
+        msg = t(lang, "cmd_added")
     else:
         cmds = get_user_cmds(user_id)
         if len(cmds) >= MAX_CUSTOM_COMMANDS:
-            await update.message.reply_text(f"❌ Достигнут лимит команд ({MAX_CUSTOM_COMMANDS}).", reply_markup=kb)
+            msg = t(lang, "cmd_limit", max=MAX_CUSTOM_COMMANDS)
         else:
-            await update.message.reply_text(f"ℹ️ Команда *{text} {version}* уже есть у тебя.", parse_mode="Markdown", reply_markup=kb)
+            msg = t(lang, "cmd_exists")
+    await query.edit_message_text(msg)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="👍", reply_markup=kb)
+    context.user_data.clear()
     return ConversationHandler.END
 
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Отменено.", reply_markup=build_main_keyboard(update.effective_user.id))
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    context.user_data.clear()
+    await update.message.reply_text(t(lang, "cancelled"), reply_markup=build_main_keyboard(user_id))
     return ConversationHandler.END
+
+# ==================== УДАЛЕНИЕ БЫСТРОЙ КОМАНДЫ ====================
+
+async def delete_cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    cmds = get_user_cmds(user_id)
+    if not cmds:
+        await update.message.reply_text(t(lang, "no_cmds_to_del"), reply_markup=build_main_keyboard(user_id))
+        return
+    rows = [[InlineKeyboardButton(cmd_label(c), callback_data=f"delcmd:{i}")] for i, c in enumerate(cmds)]
+    await update.message.reply_text(t(lang, "choose_del"), reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def delete_cmd_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    idx = int(query.data.split(":", 1)[1])
+    delete_user_cmd(user_id, idx)
+    await query.edit_message_text(t(lang, "cmd_deleted"))
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="👍", reply_markup=build_main_keyboard(user_id))
+
+# ==================== НАСТРОЙКИ ====================
+
+def settings_kb(user_id: int) -> InlineKeyboardMarkup:
+    settings = get_user_settings(user_id)
+    lang = settings["lang"]
+    sort_label = t(lang, "sort_anarchy") if settings["sort"] == "anarchy" else t(lang, "sort_rarity")
+    theme_icon = THEME_ICON.get(settings["theme"], "👻")
+    rows = [
+        [InlineKeyboardButton(t(lang, "settings_sort", val=sort_label), callback_data="set:sort")],
+        [InlineKeyboardButton(t(lang, "settings_lang", val=settings["lang"]), callback_data="set:lang")],
+        [InlineKeyboardButton(t(lang, "settings_theme", val=f"{theme_icon} {settings['theme']}"), callback_data="set:theme")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+async def settings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    await update.message.reply_text(
+        t(lang, "settings_title"), parse_mode="Markdown", reply_markup=settings_kb(user_id)
+    )
+
+
+async def settings_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    data = query.data
+
+    if data == "set:sort":
+        rows = [
+            [InlineKeyboardButton("По анархиям", callback_data="setsort:anarchy")],
+            [InlineKeyboardButton("По редкостям", callback_data="setsort:rarity")],
+            [InlineKeyboardButton("⬅️", callback_data="set:back")],
+        ]
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        return
+    if data.startswith("setsort:"):
+        set_user_setting(user_id, "sort", data.split(":", 1)[1])
+        await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        return
+    if data == "set:lang":
+        rows = [[InlineKeyboardButton(l, callback_data=f"setlang:{l}")] for l in LANGUAGES]
+        rows.append([InlineKeyboardButton("⬅️", callback_data="set:back")])
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        return
+    if data.startswith("setlang:"):
+        set_user_setting(user_id, "lang", data.split(":", 1)[1])
+        await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="👍", reply_markup=build_main_keyboard(user_id))
+        return
+    if data == "set:theme":
+        rows = []
+        for i in range(0, len(THEMES), 2):
+            row = []
+            for th in THEMES[i:i + 2]:
+                row.append(InlineKeyboardButton(f"{THEME_ICON[th]} {th}", callback_data=f"settheme:{th}"))
+            rows.append(row)
+        rows.append([InlineKeyboardButton("⬅️", callback_data="set:back")])
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        return
+    if data.startswith("settheme:"):
+        set_user_setting(user_id, "theme", data.split(":", 1)[1])
+        await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        return
+    if data == "set:back":
+        await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        return
+
+# ==================== ОБРАБОТКА КАСТОМНЫХ КОМАНД ====================
 
 async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
-    if text == "➕ Добавить команду":
+    settings = get_user_settings(user_id)
+    lang = settings["lang"]
+
+    if text == t(lang, "btn_add"):
         return await add_cmd_start(update, context)
-    match = re.match(r"🔍 (\S+) (1\.16\.5|1\.21)$", text)
-    if not match:
-        return
-    type_name, version = match.group(1), match.group(2)
+    if text == t(lang, "btn_del"):
+        return await delete_cmd_start(update, context)
+    if text == t(lang, "btn_settings"):
+        return await settings_start(update, context)
+
     cmds = get_user_cmds(user_id)
-    if not any(c["version"] == version and c["type"] == type_name for c in cmds):
-        await update.message.reply_text("⚠️ Такой команды у тебя нет.")
+    matched = None
+    for c in cmds:
+        if cmd_label(c) == text:
+            matched = c
+            break
+    if matched is None:
         return
+
+    version, type_name = matched["version"], matched["type"]
     type_num = ANARCHY_TYPES.get(type_name)
     if type_num is None:
-        await update.message.reply_text("⚠️ Неизвестный тип анархии.")
+        await update.message.reply_text(t(lang, "no_cmd"))
         return
-    await send_long(update, format_events(filter_events(version, type_num), version, type_name), build_main_keyboard(user_id))
+
+    evs = filter_events(version, type_num)
+    if matched.get("events"):
+        evs = [e for e in evs if e["name"] in matched["events"]]
+    if matched.get("rarity"):
+        evs = [e for e in evs if e.get("rarity") == matched["rarity"]]
+    evs = sort_events(evs, settings["sort"])
+
+    await send_long(
+        update,
+        format_events(evs, version, lang, type_name),
+        build_main_keyboard(user_id)
+    )
 
 # ==================== ВЕБ-АВТОРИЗАЦИЯ ====================
 
 code_future = None
 phone_code_hash = None
+
 
 async def web_index(request):
     return web.Response(content_type="text/html", text="""
@@ -317,6 +803,7 @@ button{font-size:24px;padding:12px 24px;border-radius:8px;border:none;background
 </body></html>
 """)
 
+
 async def web_submit_code(request):
     global code_future
     data = await request.post()
@@ -331,6 +818,7 @@ h2{color:#43b581}</style></head><body>
 </body></html>
 """)
     return web.Response(text="Ошибка: код уже был введён.")
+
 
 async def run_web_server():
     app = web.Application()
@@ -347,10 +835,8 @@ async def run_web_server():
 async def main():
     global code_future, phone_code_hash
 
-    # Запускаем веб-сервер сразу
     await run_web_server()
 
-    # Подключаемся и запрашиваем код
     user_client = TelegramClient(StringSession(), API_ID, API_HASH)
     await user_client.connect()
 
@@ -370,7 +856,6 @@ async def main():
         print(f"❌ Ошибка авторизации: {e}")
         return
 
-    # Запускаем опрос SpookyBot
     async def update_loop():
         while True:
             try:
@@ -381,14 +866,14 @@ async def main():
                     msg = messages[0]
                     if msg.text and ("Анархия" in msg.text or "До следующего" in msg.text):
                         parsed = parse_events(msg.text)
-                        events_data["1.16.5"].clear()
-                        events_data["1.21"].clear()
+                        events_data[VERSION_4DIGIT].clear()
+                        events_data[VERSION_3DIGIT].clear()
                         for event in parsed:
                             v = get_version(event["anarchy_num"])
                             events_data[v].append(event)
-                        events_data["1.16.5"].sort(key=lambda x: x["anarchy_num"])
-                        events_data["1.21"].sort(key=lambda x: x["anarchy_num"])
-                        print(f"🔄 Обновлено: 1.16.5 — {len(events_data['1.16.5'])}, 1.21 — {len(events_data['1.21'])}")
+                        events_data[VERSION_4DIGIT].sort(key=lambda x: x["anarchy_num"])
+                        events_data[VERSION_3DIGIT].sort(key=lambda x: x["anarchy_num"])
+                        print(f"🔄 Обновлено: {VERSION_4DIGIT} — {len(events_data[VERSION_4DIGIT])}, {VERSION_3DIGIT} — {len(events_data[VERSION_3DIGIT])}")
             except Exception as e:
                 print(f"❌ Ошибка опроса: {e}")
                 traceback.print_exc()
@@ -396,7 +881,6 @@ async def main():
 
     asyncio.create_task(update_loop())
 
-    # Запускаем telegram бота
     bot_app = Application.builder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("help", help_cmd))
@@ -404,19 +888,34 @@ async def main():
     bot_app.add_handler(CommandHandler("events2", events2))
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^➕ Добавить команду$"), add_cmd_start)],
+        entry_points=[MessageHandler(
+            filters.Regex(r"^(➕ Добавить команду|➕ Add command|➕ Команда қосу|➕ Додати команду|➕ Дадаць каманду)$"),
+            add_cmd_start
+        )],
         states={
             CHOOSE_VERSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_cmd_version)],
             CHOOSE_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_cmd_type)],
+            CHOOSE_EVENTS: [CallbackQueryHandler(choose_events_cb, pattern=r"^ev:")],
+            CHOOSE_RARITY: [CallbackQueryHandler(choose_rarity_cb, pattern=r"^rar:")],
         },
         fallbacks=[
-            MessageHandler(filters.Regex(r"^❌ Отмена$"), cancel),
+            MessageHandler(filters.Regex(r"^(❌ Отмена|❌ Cancel|❌ Бас тарту|❌ Скасувати|❌ Адмена)$"), cancel),
             CommandHandler("start", start),
         ],
     )
     bot_app.add_handler(conv_handler)
+
+    bot_app.add_handler(CallbackQueryHandler(delete_cmd_cb, pattern=r"^delcmd:"))
+    bot_app.add_handler(CallbackQueryHandler(settings_cb, pattern=r"^set"))
+
     bot_app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.Regex(r"^🔍 "),
+        handle_custom_cmd
+    ))
+    bot_app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(
+            r"^(🗑|⚙️|➕)"
+        ),
         handle_custom_cmd
     ))
 
@@ -426,6 +925,7 @@ async def main():
     await bot_app.updater.start_polling()
     while True:
         await asyncio.sleep(3600)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
