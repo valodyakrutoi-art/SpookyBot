@@ -470,11 +470,15 @@ def filter_events(version: str, type_nums: list) -> list:
     return result
 
 
+def _norm_name(s: str) -> str:
+    return (s or "").strip().casefold()
+
+
 def remove_hidden(evs: list, hidden: list) -> list:
     if not hidden:
         return evs
-    hidden_set = set(hidden)
-    return [e for e in evs if e["name"] not in hidden_set]
+    hidden_set = {_norm_name(h) for h in hidden}
+    return [e for e in evs if _norm_name(e["name"]) not in hidden_set]
 
 
 def parse_events(text):
@@ -941,7 +945,8 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     evs = filter_events(version, type_nums)
     if matched.get("events"):
-        evs = [e for e in evs if e["name"] in matched["events"]]
+        wanted = {_norm_name(n) for n in matched["events"]}
+        evs = [e for e in evs if _norm_name(e["name"]) in wanted]
     if matched.get("rarity"):
         evs = [e for e in evs if e.get("rarity") == matched["rarity"]]
     evs = remove_hidden(evs, settings.get("hidden_events", []))
