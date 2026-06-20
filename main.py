@@ -97,6 +97,9 @@ TR = {
         "settings_title": "⚙️ *Настройки*",
         "settings_sort": "Сортировка: {val}",
         "settings_lang": "Язык: {val}",
+        "settings_hidden": "Скрытые ивенты: {val}",
+        "hidden_none": "нет",
+        "hidden_applied": "✅ Скрытые ивенты обновлены.",
         "sort_anarchy": "По анархиям",
         "sort_rarity": "По редкостям",
         "no_cmd": "⚠️ Такой команды у тебя нет.",
@@ -111,7 +114,8 @@ TR = {
             "Создай свою кнопку через «➕ Добавить команду» — выбери версию, типы анархий, ивенты и редкость. Макс. 5 команд.\n\n"
             "*Настройки:*\n"
             "⚙️ Сортировка — по номеру анархии или по редкости\n"
-            "⚙️ Язык — RU / EN / KZ / UA / BY\n\n"
+            "⚙️ Язык — RU / EN / KZ / UA / BY\n"
+            "⚙️ Скрытые ивенты — выбери типы ивентов, которые не нужно показывать\n\n"
             "По вопросам и проблемам — кнопка ниже 👇"
         ),
         "support_btn": "💬 Написать создателю",
@@ -158,6 +162,9 @@ TR = {
         "settings_title": "⚙️ *Settings*",
         "settings_sort": "Sort: {val}",
         "settings_lang": "Language: {val}",
+        "settings_hidden": "🙈 Hidden events: {val}",
+        "hidden_none": "none",
+        "hidden_applied": "✅ Hidden events updated.",
         "sort_anarchy": "By anarchy",
         "sort_rarity": "By rarity",
         "no_cmd": "⚠️ You don't have this command.",
@@ -172,7 +179,8 @@ TR = {
             "Create your button via «➕ Add command» — choose version, anarchy types, events and rarity. Max 5 commands.\n\n"
             "*Settings:*\n"
             "⚙️ Sort — by anarchy number or by rarity\n"
-            "⚙️ Language — RU / EN / KZ / UA / BY\n\n"
+            "⚙️ Language — RU / EN / KZ / UA / BY\n"
+            "⚙️ Hidden events — pick event types you don't want to see\n\n"
             "For questions and issues — button below 👇"
         ),
         "support_btn": "💬 Contact creator",
@@ -212,6 +220,9 @@ TR = {
         "settings_title": "⚙️ *Баптаулар*",
         "settings_sort": "Сұрыптау: {val}",
         "settings_lang": "Тіл: {val}",
+        "settings_hidden": "🙈 Жасырын ивенттер: {val}",
+        "hidden_none": "жоқ",
+        "hidden_applied": "✅ Жасырын ивенттер жаңартылды.",
         "sort_anarchy": "Анархия бойынша",
         "sort_rarity": "Сирек бойынша",
         "no_cmd": "⚠️ Бұндай команда жоқ.",
@@ -253,6 +264,9 @@ TR = {
         "settings_title": "⚙️ *Налаштування*",
         "settings_sort": "Сортування: {val}",
         "settings_lang": "Мова: {val}",
+        "settings_hidden": "🙈 Приховані івенти: {val}",
+        "hidden_none": "немає",
+        "hidden_applied": "✅ Приховані івенти оновлено.",
         "sort_anarchy": "За анархіями",
         "sort_rarity": "За рідкістю",
         "no_cmd": "⚠️ Такої команди немає.",
@@ -294,6 +308,9 @@ TR = {
         "settings_title": "⚙️ *Налады*",
         "settings_sort": "Сартаванне: {val}",
         "settings_lang": "Мова: {val}",
+        "settings_hidden": "🙈 Схаваныя івэнты: {val}",
+        "hidden_none": "няма",
+        "hidden_applied": "✅ Схаваныя івэнты абноўлены.",
         "sort_anarchy": "Па анархіях",
         "sort_rarity": "Па рэдкасці",
         "no_cmd": "⚠️ Такой каманды няма.",
@@ -311,7 +328,7 @@ def t(lang: str, key: str, **kwargs) -> str:
 
 # ==================== ХРАНИЛИЩЕ ====================
 
-DEFAULT_SETTINGS = {"sort": "anarchy", "lang": "RU"}
+DEFAULT_SETTINGS = {"sort": "anarchy", "lang": "RU", "hidden_events": []}
 
 
 def load_all() -> dict:
@@ -453,6 +470,13 @@ def filter_events(version: str, type_nums: list) -> list:
     return result
 
 
+def remove_hidden(evs: list, hidden: list) -> list:
+    if not hidden:
+        return evs
+    hidden_set = set(hidden)
+    return [e for e in evs if e["name"] not in hidden_set]
+
+
 def parse_events(text):
     events = []
     pattern = r'Анархия (\d+):\s*(.*?)(?=Анархия \d+:|$)'
@@ -561,7 +585,9 @@ async def events1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = get_user_settings(user_id)
     kb = build_main_keyboard(user_id)
     all_type_nums = list(ANARCHY_TYPES.values())
-    evs = sort_events(filter_events(VERSION_4DIGIT, all_type_nums), settings["sort"])
+    evs = filter_events(VERSION_4DIGIT, all_type_nums)
+    evs = remove_hidden(evs, settings.get("hidden_events", []))
+    evs = sort_events(evs, settings["sort"])
     await send_long(update, format_events(evs, VERSION_4DIGIT, settings["lang"]), kb)
 
 
@@ -570,7 +596,9 @@ async def events2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = get_user_settings(user_id)
     kb = build_main_keyboard(user_id)
     all_type_nums = list(ANARCHY_TYPES.values())
-    evs = sort_events(filter_events(VERSION_3DIGIT, all_type_nums), settings["sort"])
+    evs = filter_events(VERSION_3DIGIT, all_type_nums)
+    evs = remove_hidden(evs, settings.get("hidden_events", []))
+    evs = sort_events(evs, settings["sort"])
     await send_long(update, format_events(evs, VERSION_3DIGIT, settings["lang"]), kb)
 
 # ==================== ДОБАВЛЕНИЕ БЫСТРОЙ КОМАНДЫ ====================
@@ -781,13 +809,31 @@ async def delete_cmd_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== НАСТРОЙКИ ====================
 
+def hidden_events_inline_kb(selected: set, lang: str) -> InlineKeyboardMarkup:
+    rows = []
+    for i, name in enumerate(EVENT_TYPES):
+        mark = "✅ " if name in selected else ""
+        rows.append([InlineKeyboardButton(f"{mark}{name}", callback_data=f"hideev:{i}")])
+    rows.append([InlineKeyboardButton(t(lang, "btn_done"), callback_data="hideev:apply")])
+    rows.append([InlineKeyboardButton("⬅️", callback_data="set:back")])
+    return InlineKeyboardMarkup(rows)
+
+
 def settings_kb(user_id: int) -> InlineKeyboardMarkup:
     settings = get_user_settings(user_id)
     lang = settings["lang"]
     sort_label = t(lang, "sort_anarchy") if settings["sort"] == "anarchy" else t(lang, "sort_rarity")
+    hidden = settings.get("hidden_events", [])
+    if not hidden:
+        hidden_label = t(lang, "hidden_none")
+    elif len(hidden) == 1:
+        hidden_label = hidden[0]
+    else:
+        hidden_label = f"{len(hidden)}"
     rows = [
         [InlineKeyboardButton(t(lang, "settings_sort", val=sort_label), callback_data="set:sort")],
         [InlineKeyboardButton(t(lang, "settings_lang", val=settings["lang"]), callback_data="set:lang")],
+        [InlineKeyboardButton(t(lang, "settings_hidden", val=hidden_label), callback_data="set:hidden")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -829,7 +875,38 @@ async def settings_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
         await context.bot.send_message(chat_id=update.effective_chat.id, text="👍", reply_markup=build_main_keyboard(user_id))
         return
+    if data == "set:hidden":
+        lang = get_user_settings(user_id)["lang"]
+        hidden = set(get_user_settings(user_id).get("hidden_events", []))
+        context.user_data["hidden_temp"] = hidden
+        await query.edit_message_reply_markup(reply_markup=hidden_events_inline_kb(hidden, lang))
+        return
+    if data.startswith("hideev:"):
+        lang = get_user_settings(user_id)["lang"]
+        val = data.split(":", 1)[1]
+        temp = context.user_data.setdefault(
+            "hidden_temp", set(get_user_settings(user_id).get("hidden_events", []))
+        )
+        if val == "apply":
+            set_user_setting(user_id, "hidden_events", sorted(temp))
+            context.user_data.pop("hidden_temp", None)
+            await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=t(lang, "hidden_applied"),
+                reply_markup=build_main_keyboard(user_id)
+            )
+            return
+        idx = int(val)
+        name = EVENT_TYPES[idx]
+        if name in temp:
+            temp.discard(name)
+        else:
+            temp.add(name)
+        await query.edit_message_reply_markup(reply_markup=hidden_events_inline_kb(temp, lang))
+        return
     if data == "set:back":
+        context.user_data.pop("hidden_temp", None)
         await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
         return
 
@@ -867,6 +944,7 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         evs = [e for e in evs if e["name"] in matched["events"]]
     if matched.get("rarity"):
         evs = [e for e in evs if e.get("rarity") == matched["rarity"]]
+    evs = remove_hidden(evs, settings.get("hidden_events", []))
     evs = sort_events(evs, settings["sort"])
 
     types_label = "+".join(matched["types"]) if matched.get("types") else matched.get("type", "")
@@ -996,6 +1074,7 @@ async def main():
 
     bot_app.add_handler(CallbackQueryHandler(delete_cmd_cb, pattern=r"^delcmd:"))
     bot_app.add_handler(CallbackQueryHandler(settings_cb, pattern=r"^set"))
+    bot_app.add_handler(CallbackQueryHandler(settings_cb, pattern=r"^hideev:"))
 
     bot_app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
