@@ -18,7 +18,7 @@ from telethon.sessions import StringSession
 # ==================== КОНФИГУРАЦИЯ ====================
 API_ID = int(os.environ.get("API_ID", 38389796))
 API_HASH = os.environ.get("API_HASH", "5fbfc08d29ebc68310a1ded27a6e8c79")
-PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "+95 9761039794")
+PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "+959761039794")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8690367451:AAF1dc_lnPE1z0J7AeVDUV2kcU6SUXk1Q8U")
 PORT = int(os.environ.get("PORT", 8080))
 SPOOKY_BOT = "@SpookyTimeBot"
