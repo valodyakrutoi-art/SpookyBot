@@ -26,7 +26,7 @@ REQUEST_DELAY = 3
 UPDATE_INTERVAL = 6
 USER_COMMANDS_FILE = "user_commands.json"
 MAX_CUSTOM_COMMANDS = 5
-SUPPORT_USERNAME = "SchoolShooter2016"
+SUPPORT_USERNAME = "Xikik0mori"
 # ====================================================
 
 CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY = range(4)
