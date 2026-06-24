@@ -6,7 +6,7 @@ import time
 import traceback
 from aiohttp import web
 from telegram import (
-    Update, ReplyKeyboardMarkup, KeyboardButton,
+    BotCommand, Update, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 from telegram.ext import (
@@ -19,6 +19,7 @@ from telethon.sessions import StringSession
 # ==================== КОНФИГУРАЦИЯ ====================
 API_ID = int(os.environ.get("API_ID", 38810606))
 API_HASH = os.environ.get("API_HASH", "ad5c6998fe3df082dfdf66f836d11b24")
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
 PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "+16722019447")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8690367451:AAF1dc_lnPE1z0J7AeVDUV2kcU6SUXk1Q8U")
 PORT = int(os.environ.get("PORT", 8080))
@@ -388,6 +389,7 @@ _EXTRA_TR_RU = {
     "allow_exists": "ℹ️ @{u} уже имеет доступ.",
     "allow_usage": "Использование: /allow @username (только в группах, для админов).",
     "allow_not_admin": "🚫 Только админ чата может выдавать доступ.",
+    "fast_none": "❌ Быстрой команды №{n} нет.",
 }
 TR["RU"].update(_EXTRA_TR_RU)
 
@@ -639,22 +641,24 @@ def apply_status_filter(evs: list, mode: str) -> list:
 
 
 def sort_events(evs: list, sort_mode: str) -> list:
+    # Скорые ивенты всегда идут ПОСЛЕ активных, независимо от сортировки
     if sort_mode == "rarity":
-        return sorted(evs, key=lambda e: (RARITY_ORDER.get(e.get("rarity"), len(RARITY_ORDER)), e["anarchy_num"]))
-    return sorted(evs, key=lambda e: e["anarchy_num"])
+        return sorted(evs, key=lambda e: (1 if e.get("upcoming") else 0,
+                                          RARITY_ORDER.get(e.get("rarity"), len(RARITY_ORDER)),
+                                          e["anarchy_num"]))
+    return sorted(evs, key=lambda e: (1 if e.get("upcoming") else 0, e["anarchy_num"]))
 
 
 def _clean_location(loc: str) -> str:
-    """Нормализует координаты/варп: убирает лишние пробелы и оборачивает
-    значение в моноширинный блок, чтобы оно копировалось одним тапом."""
+    """Убирает лишние пробелы в координатах/варпе (в т.ч. в начале),
+    чтобы строка копировалась корректно."""
     if not loc:
         return loc
     if ":" in loc:
         label, val = loc.split(":", 1)
         val = re.sub(r"\s+", " ", val).strip()
-        return f"{label.strip()}: `{val}`" if val else loc
-    val = re.sub(r"\s+", " ", loc).strip()
-    return f"`{val}`" if val else loc
+        return f"{label.strip()}: {val}" if val else loc
+    return re.sub(r"\s+", " ", loc).strip()
 
 
 def format_one_event(e: dict, compact: bool = False, version: str = None) -> str:
@@ -679,11 +683,10 @@ def format_one_event(e: dict, compact: bool = False, version: str = None) -> str
 def format_events(evs: list, version: str, lang: str, type_name: str = None, compact: bool = False) -> str:
     label = f"{type_name} {version}" if type_name else version
     if not evs:
-        return t(lang, "no_events", label=label) + t(lang, "footer_updated", ts=last_update_str())
+        return t(lang, "no_events", label=label)
     out = t(lang, "events_header", label=label)
     for e in evs:
         out += format_one_event(e, compact)
-    out += t(lang, "footer_updated", ts=last_update_str())
     return out
 
 
@@ -704,6 +707,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(t(lang, "welcome"), parse_mode="Markdown", reply_markup=kb)
 
 
+COMMANDS_HELP = (
+    "\n\n*Команды:*\n"
+    "• /events1 — ивенты 1.16.5\n"
+    "• /events2 — ивенты 1.21\n"
+    "• /search <текст> — поиск ивента\n"
+    "• /newcommand — создать быструю команду\n"
+    "• /delcommand — удалить быструю команду\n"
+    "• /fastcommand1 … /fastcommand5 — запустить быструю команду №N\n"
+    "• /settings — настройки\n"
+    "• /allow @username — выдать доступ в группе (для админов)\n"
+    "• /help — справка"
+)
+
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = get_user_settings(user_id)["lang"]
@@ -712,7 +729,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton(t(lang, "support_btn"), url=f"https://t.me/{SUPPORT_USERNAME}")
     ]])
     await update.message.reply_text(
-        t(lang, "help_text"), parse_mode="Markdown", reply_markup=kb
+        t(lang, "help_text") + COMMANDS_HELP, parse_mode="Markdown", reply_markup=kb
     )
     await update.message.reply_text(
         t(lang, "support_msg"), reply_markup=inline_kb
@@ -724,7 +741,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def results_kb(token: str, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(t(lang, "btn_refresh"), callback_data=f"refresh:{token}"),
-        InlineKeyboardButton(t(lang, "btn_share"), callback_data=f"share:{token}"),
     ]])
 
 
@@ -760,7 +776,6 @@ def _format_search(results, query, lang, compact):
     out = t(lang, "search_header", q=query)
     for version, e in results:
         out += format_one_event(e, compact, version)
-    out += t(lang, "footer_updated", ts=last_update_str())
     return out
 
 
@@ -1349,6 +1364,48 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     idx = cmds.index(matched)
     await send_events_view(update, evs, version, settings, types_label, f"c:{idx}")
 
+async def _run_cmd_index(update, context, idx):
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    lang = settings["lang"]
+    cmds = get_user_cmds(user_id)
+    if idx < 0 or idx >= len(cmds):
+        await update.message.reply_text(t(lang, "fast_none", n=idx + 1))
+        return
+    matched = cmds[idx]
+    evs, version, types_label = _events_for_cmd(user_id, matched, settings)
+    await send_events_view(update, evs, version, settings, types_label, f"c:{idx}")
+
+
+async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    query = " ".join(context.args).strip() if context.args else ""
+    if not query:
+        context.user_data["awaiting_search"] = True
+        await update.message.reply_text(t(lang, "search_prompt"))
+        return
+    await do_search(update, context, query)
+
+
+async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await settings_start(update, context)
+
+
+async def newcommand_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await add_cmd_start(update, context)
+
+
+async def delcommand_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await delete_cmd_start(update, context)
+
+
+def _make_fast_cmd(n):
+    async def _h(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await _run_cmd_index(update, context, n - 1)
+    return _h
+
+
 # ==================== ВЕБ-АВТОРИЗАЦИЯ ====================
 
 code_future = None
@@ -1400,28 +1457,14 @@ async def run_web_server():
 # ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
 
 async def main():
-    global code_future, phone_code_hash
-
-    await run_web_server()
-
-    user_client = TelegramClient(StringSession(), API_ID, API_HASH)
+    user_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await user_client.connect()
 
-    print(f"📱 Отправляю код на {PHONE_NUMBER}...")
-    result = await user_client.send_code_request(PHONE_NUMBER)
-    phone_code_hash = result.phone_code_hash
-    print("📱 Код отправлен — жду ввода на веб-странице...")
-
-    loop = asyncio.get_event_loop()
-    code_future = loop.create_future()
-    code = await code_future
-
-    try:
-        await user_client.sign_in(PHONE_NUMBER, code, phone_code_hash=phone_code_hash)
-        print("✅ Userbot (Telethon) успешно авторизован")
-    except Exception as e:
-        print(f"❌ Ошибка авторизации: {e}")
+    if not await user_client.is_user_authorized():
+        print("❌ SESSION_STRING пуст или невалиден. Сгенерируй строку заново и добавь в Railway Variables.")
         return
+    _me = await user_client.get_me()
+    print(f"✅ Userbot (Telethon) авторизован через SESSION_STRING как {_me.first_name}")
 
     async def update_loop():
         while True:
@@ -1452,6 +1495,12 @@ async def main():
     bot_app = Application.builder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("help", help_cmd))
+    bot_app.add_handler(CommandHandler("search", search_cmd))
+    bot_app.add_handler(CommandHandler("settings", settings_cmd))
+    bot_app.add_handler(CommandHandler("newcommand", newcommand_cmd))
+    bot_app.add_handler(CommandHandler("delcommand", delcommand_cmd))
+    for _i in range(1, 6):
+        bot_app.add_handler(CommandHandler(f"fastcommand{_i}", _make_fast_cmd(_i)))
     bot_app.add_handler(CommandHandler("events1", events1))
     bot_app.add_handler(CommandHandler("events2", events2))
 
@@ -1478,7 +1527,6 @@ async def main():
     bot_app.add_handler(CallbackQueryHandler(settings_cb, pattern=r"^hideev:"))
     bot_app.add_handler(CommandHandler("allow", allow_cmd))
     bot_app.add_handler(CallbackQueryHandler(refresh_cb, pattern=r"^refresh:"))
-    bot_app.add_handler(CallbackQueryHandler(share_cb, pattern=r"^share:"))
 
     bot_app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
@@ -1488,6 +1536,23 @@ async def main():
     print("🤖 Telegram-бот запущен")
     await bot_app.initialize()
     await bot_app.start()
+    try:
+        await bot_app.bot.set_my_commands([
+            BotCommand("events1", "Ивенты 1.16.5"),
+            BotCommand("events2", "Ивенты 1.21"),
+            BotCommand("search", "Поиск ивента"),
+            BotCommand("newcommand", "Создать быструю команду"),
+            BotCommand("delcommand", "Удалить быструю команду"),
+            BotCommand("fastcommand1", "Быстрая команда №1"),
+            BotCommand("fastcommand2", "Быстрая команда №2"),
+            BotCommand("fastcommand3", "Быстрая команда №3"),
+            BotCommand("fastcommand4", "Быстрая команда №4"),
+            BotCommand("fastcommand5", "Быстрая команда №5"),
+            BotCommand("settings", "Настройки"),
+            BotCommand("help", "Справка"),
+        ])
+    except Exception as _e:
+        print(f"⚠️ set_my_commands: {_e}")
     await bot_app.updater.start_polling()
     while True:
         await asyncio.sleep(3600)
