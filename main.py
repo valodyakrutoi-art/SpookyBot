@@ -2,6 +2,7 @@ import asyncio
 import re
 import json
 import os
+import time
 import traceback
 from aiohttp import web
 from telegram import (
@@ -29,7 +30,7 @@ MAX_CUSTOM_COMMANDS = 5
 SUPPORT_USERNAME = "Xikik0mori"
 # ====================================================
 
-CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY = range(4)
+CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY, CHOOSE_NAME = range(5)
 
 ANARCHY_TYPES = {
     "Соло": 1, "Дуо": 2, "Трио": 3,
@@ -321,6 +322,76 @@ TR = {
 }
 
 
+# ==================== ГРУППОВОЙ ДОСТУП / ВРЕМЯ ОБНОВЛЕНИЯ ====================
+
+LAST_UPDATE = {"ts": None}
+ALLOW_FILE = "group_allow.json"
+
+
+def _load_allow():
+    if os.path.exists(ALLOW_FILE):
+        try:
+            with open(ALLOW_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_allow(data):
+    with open(ALLOW_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def get_chat_allow(chat_id) -> list:
+    return _load_allow().get(str(chat_id), [])
+
+
+def add_chat_allow(chat_id, username: str) -> bool:
+    data = _load_allow()
+    lst = data.setdefault(str(chat_id), [])
+    uname = username.lstrip("@").lower()
+    if uname in lst:
+        return False
+    lst.append(uname)
+    _save_allow(data)
+    return True
+
+
+def last_update_str() -> str:
+    ts = LAST_UPDATE.get("ts")
+    return time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "\u2014"
+
+
+# Доп. тексты (RU; для остальных языков сработает RU-fallback в t())
+_EXTRA_TR_RU = {
+    "footer_updated": "\n🕒 Обновлено: {ts}",
+    "btn_refresh": "🔄 Обновить",
+    "btn_share": "📤 Поделиться",
+    "btn_search": "🔍 Поиск",
+    "upcoming_line": "Анархия {num}: ⏳ ивент через {next_in}",
+    "search_prompt": "🔍 Введи название ивента для поиска:",
+    "search_empty": "📭 Ничего не найдено по запросу: {q}",
+    "search_header": "🔍 Результаты «{q}»:\n\n",
+    "ask_name": "✏️ Введи название для команды (или «-» для авто):",
+    "choose_rarities": "Выбери редкости (можно несколько):",
+    "set_status": "📊 Статус: {val}",
+    "status_both": "оба",
+    "status_active": "активные",
+    "status_upcoming": "скорые",
+    "set_compact": "🗜 Компактный: {val}",
+    "on": "вкл",
+    "off": "выкл",
+    "refreshed": "🔄 Обновлено!",
+    "no_access": "🚫 Нет доступа. Попроси админа чата: /allow @username",
+    "allow_ok": "✅ @{u} получил доступ в этом чате.",
+    "allow_exists": "ℹ️ @{u} уже имеет доступ.",
+    "allow_usage": "Использование: /allow @username (только в группах, для админов).",
+    "allow_not_admin": "🚫 Только админ чата может выдавать доступ.",
+}
+TR["RU"].update(_EXTRA_TR_RU)
+
+
 def t(lang: str, key: str, **kwargs) -> str:
     lang = lang if lang in TR else "RU"
     text = TR[lang].get(key, TR["RU"].get(key, key))
@@ -328,7 +399,7 @@ def t(lang: str, key: str, **kwargs) -> str:
 
 # ==================== ХРАНИЛИЩЕ ====================
 
-DEFAULT_SETTINGS = {"sort": "anarchy", "lang": "RU", "hidden_events": []}
+DEFAULT_SETTINGS = {"sort": "anarchy", "lang": "RU", "hidden_events": [], "status_filter": "both", "compact": False}
 
 
 def load_all() -> dict:
@@ -377,7 +448,11 @@ def get_user_cmds(user_id: int) -> list:
 
 
 def get_user_settings(user_id: int) -> dict:
-    return get_user_entry(user_id)["settings"]
+    s = get_user_entry(user_id)["settings"]
+    for _k, _v in DEFAULT_SETTINGS.items():
+        if _k not in s:
+            s[_k] = list(_v) if isinstance(_v, list) else _v
+    return s
 
 
 def set_user_setting(user_id: int, key: str, value):
@@ -386,19 +461,30 @@ def set_user_setting(user_id: int, key: str, value):
     save_user_entry(user_id, entry)
 
 
-def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, rarity: str) -> bool:
+def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, rarity=None, name: str = None) -> bool:
     entry = get_user_entry(user_id)
     cmds = entry["commands"]
     if len(cmds) >= MAX_CUSTOM_COMMANDS:
         return False
+    if isinstance(rarity, (list, set, tuple)):
+        rarities = sorted(rarity) or None
+    elif rarity:
+        rarities = [rarity]
+    else:
+        rarities = None
     new_entry = {
         "version": version,
         "types": sorted(anarchy_types) if anarchy_types else None,
         "events": sorted(events) if events else None,
-        "rarity": rarity or None,
+        "rarity": None,
+        "rarities": rarities,
+        "name": name or None,
     }
-    if new_entry in cmds:
-        return False
+    for c in cmds:
+        c_rar = c.get("rarities") or ([c["rarity"]] if c.get("rarity") else None)
+        if (c.get("version") == new_entry["version"] and c.get("types") == new_entry["types"]
+                and c.get("events") == new_entry["events"] and c_rar == rarities):
+            return False
     cmds.append(new_entry)
     entry["commands"] = cmds
     save_user_entry(user_id, entry)
@@ -418,6 +504,8 @@ def delete_user_cmd(user_id: int, idx: int) -> bool:
 # ==================== КЛАВИАТУРА ====================
 
 def cmd_label(cmd: dict) -> str:
+    if cmd.get("name"):
+        return f"⭐ {cmd['name']}"
     version = cmd.get("version", "")
     types = cmd.get("types") or cmd.get("type")  # совместимость со старым форматом
     if isinstance(types, list):
@@ -429,8 +517,9 @@ def cmd_label(cmd: dict) -> str:
     if cmd.get("events"):
         names = cmd["events"]
         extras.append(names[0] if len(names) == 1 else f"{len(names)} ив.")
-    if cmd.get("rarity"):
-        extras.append(cmd["rarity"])
+    rar = cmd.get("rarities") or ([cmd["rarity"]] if cmd.get("rarity") else None)
+    if rar:
+        extras.append("+".join(rar) if len(rar) <= 2 else f"{len(rar)} ред.")
     if extras:
         label += " (" + ", ".join(extras) + ")"
     return label
@@ -444,6 +533,7 @@ def build_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
         [KeyboardButton("/events1"), KeyboardButton("/events2")],
         [KeyboardButton("/help"), KeyboardButton(t(lang, "btn_add"))],
         [KeyboardButton(t(lang, "btn_del")), KeyboardButton(t(lang, "btn_settings"))],
+        [KeyboardButton(t(lang, "btn_search"))],
     ]
     custom_buttons = [KeyboardButton(cmd_label(c)) for c in cmds]
     for i in range(0, len(custom_buttons), 2):
@@ -485,9 +575,23 @@ def parse_events(text):
     events = []
     pattern = r'Анархия (\d+):\s*(.*?)(?=Анархия \d+:|$)'
     for num_str, content in re.findall(pattern, text, re.DOTALL):
-        if "До следующего ивента:" in content:
-            continue
         num = int(num_str)
+        if "До следующего ивента:" in content:
+            m_up = re.search(r"До следующего ивента:\s*(.+)", content)
+            next_in = m_up.group(1).strip().split("\n")[0].strip() if m_up else "?"
+            events.append({
+                "anarchy_num": num,
+                "name": "",
+                "loot_level": None,
+                "rarity": None,
+                "status": None,
+                "time_str": None,
+                "location": None,
+                "raw_first_line": "",
+                "upcoming": True,
+                "next_in": next_in,
+            })
+            continue
         lines = content.strip().split("\n")
         if not lines:
             continue
@@ -526,29 +630,60 @@ def parse_events(text):
     return events
 
 
+def apply_status_filter(evs: list, mode: str) -> list:
+    if mode == "active":
+        return [e for e in evs if not e.get("upcoming")]
+    if mode == "upcoming":
+        return [e for e in evs if e.get("upcoming")]
+    return evs
+
+
 def sort_events(evs: list, sort_mode: str) -> list:
     if sort_mode == "rarity":
         return sorted(evs, key=lambda e: (RARITY_ORDER.get(e.get("rarity"), len(RARITY_ORDER)), e["anarchy_num"]))
     return sorted(evs, key=lambda e: e["anarchy_num"])
 
 
-def format_events(evs: list, version: str, lang: str, type_name: str = None) -> str:
-    label = f"{type_name} {version}" if type_name else version
-    if not evs:
-        return t(lang, "no_events", label=label)
-    out = t(lang, "events_header", label=label)
-    for e in evs:
-        out += f"Анархия {e['anarchy_num']}:\n{e['raw_first_line']}\n"
-        if e["loot_level"]:
+def _clean_location(loc: str) -> str:
+    """Нормализует координаты/варп: убирает лишние пробелы и оборачивает
+    значение в моноширинный блок, чтобы оно копировалось одним тапом."""
+    if not loc:
+        return loc
+    if ":" in loc:
+        label, val = loc.split(":", 1)
+        val = re.sub(r"\s+", " ", val).strip()
+        return f"{label.strip()}: `{val}`" if val else loc
+    val = re.sub(r"\s+", " ", loc).strip()
+    return f"`{val}`" if val else loc
+
+
+def format_one_event(e: dict, compact: bool = False, version: str = None) -> str:
+    head = f"[{version}] " if version else ""
+    if e.get("upcoming"):
+        return f"{head}Анархия {e['anarchy_num']}: ⏳ ивент через {e.get('next_in') or '?'}\n\n"
+    out = f"{head}Анархия {e['anarchy_num']}:\n{e['raw_first_line']}\n"
+    if not compact:
+        if e.get("loot_level"):
             out += f"Уровень лута: {e['loot_level']}\n"
-        if e["status"]:
+        if e.get("status"):
             out += f"Статус: {e['status']}"
-            if e["time_str"]:
+            if e.get("time_str"):
                 out += f", {e['time_str']}"
             out += "\n"
-        if e["location"]:
-            out += e["location"] + "\n"
-        out += "\n"
+    if e.get("location"):
+        out += _clean_location(e["location"]) + "\n"
+    out += "\n"
+    return out
+
+
+def format_events(evs: list, version: str, lang: str, type_name: str = None, compact: bool = False) -> str:
+    label = f"{type_name} {version}" if type_name else version
+    if not evs:
+        return t(lang, "no_events", label=label) + t(lang, "footer_updated", ts=last_update_str())
+    out = t(lang, "events_header", label=label)
+    for e in evs:
+        out += format_one_event(e, compact)
+    out += t(lang, "footer_updated", ts=last_update_str())
     return out
 
 
@@ -584,6 +719,177 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ==================== ПОИСК / ПОДЕЛИТЬСЯ / ОБНОВИТЬ / ДОСТУП ====================
+
+def results_kb(token: str, lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(t(lang, "btn_refresh"), callback_data=f"refresh:{token}"),
+        InlineKeyboardButton(t(lang, "btn_share"), callback_data=f"share:{token}"),
+    ]])
+
+
+async def send_events_view(update, evs, version, settings, type_name, token):
+    lang = settings["lang"]
+    text = format_events(evs, version, lang, type_name, settings.get("compact", False))
+    kb = results_kb(token, lang)
+    msg = update.effective_message
+    if len(text) > 4000:
+        chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+        for c in chunks[:-1]:
+            await msg.reply_text(c)
+        await msg.reply_text(chunks[-1], reply_markup=kb)
+    else:
+        await msg.reply_text(text, reply_markup=kb)
+
+
+def _search_events(query: str, settings: dict):
+    ql = (query or "").strip().lower()
+    res = []
+    if not ql:
+        return res
+    for version in (VERSION_4DIGIT, VERSION_3DIGIT):
+        evs = apply_status_filter(events_data.get(version, []), settings.get("status_filter", "both"))
+        evs = remove_hidden(evs, settings.get("hidden_events", []))
+        for e in sort_events(evs, settings["sort"]):
+            if ql in (e.get("name") or "").lower():
+                res.append((version, e))
+    return res
+
+
+def _format_search(results, query, lang, compact):
+    out = t(lang, "search_header", q=query)
+    for version, e in results:
+        out += format_one_event(e, compact, version)
+    out += t(lang, "footer_updated", ts=last_update_str())
+    return out
+
+
+async def do_search(update, context, query):
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    lang = settings["lang"]
+    context.user_data["last_search"] = query
+    results = _search_events(query, settings)
+    if not results:
+        await update.message.reply_text(t(lang, "search_empty", q=query),
+                                        reply_markup=build_main_keyboard(user_id))
+        return
+    text = _format_search(results, query, lang, settings.get("compact", False))
+    kb = results_kb("s", lang)
+    if len(text) > 4000:
+        chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+        for c in chunks[:-1]:
+            await update.message.reply_text(c)
+        await update.message.reply_text(chunks[-1], reply_markup=kb)
+    else:
+        await update.message.reply_text(text, reply_markup=kb)
+
+
+def _events_for_cmd(user_id, cmd, settings):
+    version = cmd.get("version")
+    types = cmd.get("types") or ([cmd["type"]] if cmd.get("type") else None)
+    type_nums = [ANARCHY_TYPES[x] for x in types if x in ANARCHY_TYPES] if types else list(ANARCHY_TYPES.values())
+    evs = filter_events(version, type_nums)
+    wanted = cmd.get("events")
+    if wanted:
+        evs = [e for e in evs if e.get("name") in wanted]
+    rarities = cmd.get("rarities") or ([cmd["rarity"]] if cmd.get("rarity") else None)
+    if rarities:
+        evs = [e for e in evs if e.get("rarity") in rarities]
+    evs = remove_hidden(evs, settings.get("hidden_events", []))
+    evs = apply_status_filter(evs, settings.get("status_filter", "both"))
+    evs = sort_events(evs, settings["sort"])
+    type_label = "+".join(types) if types else ""
+    return evs, version, type_label
+
+
+async def _render_token(update, context, token):
+    """Возвращает (text, version, lang) для refresh/share."""
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    lang = settings["lang"]
+    kind, _, rest = token.partition(":")
+    if kind == "v":
+        version = rest
+        evs = filter_events(version, list(ANARCHY_TYPES.values()))
+        evs = remove_hidden(evs, settings.get("hidden_events", []))
+        evs = apply_status_filter(evs, settings.get("status_filter", "both"))
+        evs = sort_events(evs, settings["sort"])
+        return format_events(evs, version, lang, None, settings.get("compact", False)), lang
+    if kind == "c":
+        cmds = get_user_cmds(user_id)
+        idx = int(rest) if rest.isdigit() else -1
+        if 0 <= idx < len(cmds):
+            evs, version, type_label = _events_for_cmd(user_id, cmds[idx], settings)
+            return format_events(evs, version, lang, type_label, settings.get("compact", False)), lang
+        return t(lang, "no_events", label=""), lang
+    if kind == "s":
+        q = context.user_data.get("last_search", "")
+        results = _search_events(q, settings)
+        if not results:
+            return t(lang, "search_empty", q=q), lang
+        return _format_search(results, q, lang, settings.get("compact", False)), lang
+    return t(lang, "no_events", label=""), lang
+
+
+async def refresh_cb(update, context):
+    query = update.callback_query
+    lang = get_user_settings(update.effective_user.id)["lang"]
+    token = query.data.split(":", 1)[1]
+    text, lang = await _render_token(update, context, token)
+    await query.answer(t(lang, "refreshed"))
+    try:
+        await query.edit_message_text(text[:4000], reply_markup=results_kb(token, lang))
+    except Exception:
+        pass
+
+
+async def share_cb(update, context):
+    query = update.callback_query
+    await query.answer()
+    token = query.data.split(":", 1)[1]
+    text, lang = await _render_token(update, context, token)
+    await query.message.reply_text(text[:4000])
+
+
+async def _has_group_access(update, context) -> bool:
+    chat = update.effective_chat
+    user = update.effective_user
+    try:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        if member.status in ("creator", "administrator"):
+            return True
+    except Exception:
+        pass
+    uname = (user.username or "").lower()
+    return uname in get_chat_allow(chat.id)
+
+
+async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    chat = update.effective_chat
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text(t(lang, "allow_usage"))
+        return
+    try:
+        member = await context.bot.get_chat_member(chat.id, user_id)
+        if member.status not in ("creator", "administrator"):
+            await update.message.reply_text(t(lang, "allow_not_admin"))
+            return
+    except Exception:
+        await update.message.reply_text(t(lang, "allow_not_admin"))
+        return
+    if not context.args:
+        await update.message.reply_text(t(lang, "allow_usage"))
+        return
+    uname = context.args[0].lstrip("@")
+    if add_chat_allow(chat.id, uname):
+        await update.message.reply_text(t(lang, "allow_ok", u=uname.lower()))
+    else:
+        await update.message.reply_text(t(lang, "allow_exists", u=uname.lower()))
+
+
 async def events1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     settings = get_user_settings(user_id)
@@ -592,7 +898,8 @@ async def events1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     evs = filter_events(VERSION_4DIGIT, all_type_nums)
     evs = remove_hidden(evs, settings.get("hidden_events", []))
     evs = sort_events(evs, settings["sort"])
-    await send_long(update, format_events(evs, VERSION_4DIGIT, settings["lang"]), kb)
+    evs = apply_status_filter(evs, settings.get("status_filter", "both"))
+    await send_events_view(update, evs, VERSION_4DIGIT, settings, None, "v:" + VERSION_4DIGIT)
 
 
 async def events2(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -603,7 +910,8 @@ async def events2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     evs = filter_events(VERSION_3DIGIT, all_type_nums)
     evs = remove_hidden(evs, settings.get("hidden_events", []))
     evs = sort_events(evs, settings["sort"])
-    await send_long(update, format_events(evs, VERSION_3DIGIT, settings["lang"]), kb)
+    evs = apply_status_filter(evs, settings.get("status_filter", "both"))
+    await send_events_view(update, evs, VERSION_3DIGIT, settings, None, "v:" + VERSION_3DIGIT)
 
 # ==================== ДОБАВЛЕНИЕ БЫСТРОЙ КОМАНДЫ ====================
 
@@ -629,9 +937,13 @@ def events_inline_kb(selected: set, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def rarity_inline_kb(lang: str) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(r, callback_data=f"rar:{r}")] for r in RARITIES]
-    rows.append([InlineKeyboardButton(t(lang, "btn_skip"), callback_data="rar:skip")])
+def rarity_inline_kb(lang, selected=None) -> InlineKeyboardMarkup:
+    sel = selected or set()
+    rows = [[InlineKeyboardButton(("✅ " if r in sel else "") + r, callback_data=f"rar:{r}")] for r in RARITIES]
+    rows.append([
+        InlineKeyboardButton(t(lang, "btn_skip"), callback_data="rar:skip"),
+        InlineKeyboardButton(t(lang, "btn_done"), callback_data="rar:done"),
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -747,8 +1059,8 @@ async def proceed_to_rarity(update, context, query):
     if selected and selected.issubset(NO_RARITY_EVENTS):
         return await finalize_add_cmd(update, context, query, rarity=None)
     await query.edit_message_text(
-        t(lang, "choose_rarity"),
-        reply_markup=rarity_inline_kb(lang)
+        t(lang, "choose_rarities"),
+        reply_markup=rarity_inline_kb(lang, set())
     )
     return CHOOSE_RARITY
 
@@ -756,12 +1068,54 @@ async def proceed_to_rarity(update, context, query):
 async def choose_rarity_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    lang = get_user_settings(update.effective_user.id)["lang"]
     data = query.data.split(":", 1)[1]
-    rarity = None if data == "skip" else data
-    return await finalize_add_cmd(update, context, query, rarity=rarity)
+    sel = context.user_data.setdefault("add_rarities", set())
+    if data == "skip":
+        sel.clear()
+        return await ask_cmd_name(update, context, query)
+    if data == "done":
+        return await ask_cmd_name(update, context, query)
+    if data in sel:
+        sel.discard(data)
+    else:
+        sel.add(data)
+    await query.edit_message_reply_markup(reply_markup=rarity_inline_kb(lang, sel))
+    return CHOOSE_RARITY
 
 
-async def finalize_add_cmd(update, context, query, rarity):
+async def ask_cmd_name(update, context, query):
+    lang = get_user_settings(update.effective_user.id)["lang"]
+    await query.edit_message_text(t(lang, "ask_name"))
+    return CHOOSE_NAME
+
+
+async def receive_cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    raw = (update.message.text or "").strip()
+    name = None if raw in ("-", "") else raw[:40]
+    version = context.user_data.get("add_version")
+    types_sel = list(context.user_data.get("add_types", set())) or None
+    events_sel = list(context.user_data.get("add_events", set())) or None
+    rarities_sel = sorted(context.user_data.get("add_rarities", set())) or None
+    ok = add_user_cmd(user_id, version, types_sel, events_sel, rarities_sel, name)
+    kb = build_main_keyboard(user_id)
+    if ok:
+        msg = t(lang, "cmd_added")
+    elif len(get_user_cmds(user_id)) >= MAX_CUSTOM_COMMANDS:
+        msg = t(lang, "cmd_limit", max=MAX_CUSTOM_COMMANDS)
+    else:
+        msg = t(lang, "cmd_exists")
+    await update.message.reply_text(msg, reply_markup=kb)
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def finalize_add_cmd(update, context, query, rarity=None):
+    if rarity:
+        context.user_data.setdefault("add_rarities", set()).add(rarity)
+    return await ask_cmd_name(update, context, query)
     user_id = update.effective_user.id
     lang = get_user_settings(user_id)["lang"]
     version = context.user_data.get("add_version")
@@ -838,6 +1192,8 @@ def settings_kb(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(t(lang, "settings_sort", val=sort_label), callback_data="set:sort")],
         [InlineKeyboardButton(t(lang, "settings_lang", val=settings["lang"]), callback_data="set:lang")],
         [InlineKeyboardButton(t(lang, "settings_hidden", val=hidden_label), callback_data="set:hidden")],
+        [InlineKeyboardButton(t(lang, "set_status", val=t(lang, "status_" + settings.get("status_filter", "both"))), callback_data="set:status")],
+        [InlineKeyboardButton(t(lang, "set_compact", val=t(lang, "on") if settings.get("compact") else t(lang, "off")), callback_data="set:compact")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -855,6 +1211,26 @@ async def settings_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = update.effective_user.id
     data = query.data
+
+    if data == "set:status":
+        lang = get_user_settings(user_id)["lang"]
+        rows = [
+            [InlineKeyboardButton(t(lang, "status_both"), callback_data="setstatus:both")],
+            [InlineKeyboardButton(t(lang, "status_active"), callback_data="setstatus:active")],
+            [InlineKeyboardButton(t(lang, "status_upcoming"), callback_data="setstatus:upcoming")],
+            [InlineKeyboardButton("⬅️", callback_data="set:back")],
+        ]
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        return
+    if data.startswith("setstatus:"):
+        set_user_setting(user_id, "status_filter", data.split(":", 1)[1])
+        await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        return
+    if data == "set:compact":
+        cur = get_user_settings(user_id).get("compact", False)
+        set_user_setting(user_id, "compact", not cur)
+        await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        return
 
     if data == "set:sort":
         lang = get_user_settings(user_id)["lang"]
@@ -922,6 +1298,19 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = get_user_settings(user_id)
     lang = settings["lang"]
 
+    if update.effective_chat.type in ("group", "supergroup"):
+        if not await _has_group_access(update, context):
+            await update.message.reply_text(t(lang, "no_access"))
+            return
+
+    if text == t(lang, "btn_search"):
+        context.user_data["awaiting_search"] = True
+        await update.message.reply_text(t(lang, "search_prompt"))
+        return
+    if context.user_data.get("awaiting_search"):
+        context.user_data["awaiting_search"] = False
+        return await do_search(update, context, text)
+
     if text == t(lang, "btn_add"):
         return await add_cmd_start(update, context)
     if text == t(lang, "btn_del"):
@@ -947,13 +1336,18 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if matched.get("events"):
         wanted = {_norm_name(n) for n in matched["events"]}
         evs = [e for e in evs if _norm_name(e["name"]) in wanted]
-    if matched.get("rarity"):
+    rarities = matched.get("rarities")
+    if rarities:
+        evs = [e for e in evs if e.get("rarity") in rarities]
+    elif matched.get("rarity"):
         evs = [e for e in evs if e.get("rarity") == matched["rarity"]]
     evs = remove_hidden(evs, settings.get("hidden_events", []))
+    evs = apply_status_filter(evs, settings.get("status_filter", "both"))
     evs = sort_events(evs, settings["sort"])
 
     types_label = "+".join(matched["types"]) if matched.get("types") else matched.get("type", "")
-    await send_long(update, format_events(evs, version, lang, types_label), build_main_keyboard(user_id))
+    idx = cmds.index(matched)
+    await send_events_view(update, evs, version, settings, types_label, f"c:{idx}")
 
 # ==================== ВЕБ-АВТОРИЗАЦИЯ ====================
 
@@ -1046,6 +1440,7 @@ async def main():
                             events_data[v].append(event)
                         events_data[VERSION_4DIGIT].sort(key=lambda x: x["anarchy_num"])
                         events_data[VERSION_3DIGIT].sort(key=lambda x: x["anarchy_num"])
+                        LAST_UPDATE["ts"] = time.time()
                         print(f"🔄 Обновлено: {VERSION_4DIGIT} — {len(events_data[VERSION_4DIGIT])}, {VERSION_3DIGIT} — {len(events_data[VERSION_3DIGIT])}")
             except Exception as e:
                 print(f"❌ Ошибка опроса: {e}")
@@ -1069,6 +1464,7 @@ async def main():
             CHOOSE_TYPE: [CallbackQueryHandler(choose_anarchy_type_cb, pattern=r"^atype:")],
             CHOOSE_EVENTS: [CallbackQueryHandler(choose_events_cb, pattern=r"^ev:")],
             CHOOSE_RARITY: [CallbackQueryHandler(choose_rarity_cb, pattern=r"^rar:")],
+            CHOOSE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cmd_name)],
         },
         fallbacks=[
             MessageHandler(filters.TEXT & ~filters.COMMAND, cancel),
@@ -1080,6 +1476,9 @@ async def main():
     bot_app.add_handler(CallbackQueryHandler(delete_cmd_cb, pattern=r"^delcmd:"))
     bot_app.add_handler(CallbackQueryHandler(settings_cb, pattern=r"^set"))
     bot_app.add_handler(CallbackQueryHandler(settings_cb, pattern=r"^hideev:"))
+    bot_app.add_handler(CommandHandler("allow", allow_cmd))
+    bot_app.add_handler(CallbackQueryHandler(refresh_cb, pattern=r"^refresh:"))
+    bot_app.add_handler(CallbackQueryHandler(share_cb, pattern=r"^share:"))
 
     bot_app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
