@@ -3,6 +3,7 @@ import re
 import json
 import os
 import time
+import html
 import traceback
 from aiohttp import web
 from telegram import (
@@ -17,15 +18,15 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # ==================== КОНФИГУРАЦИЯ ====================
-API_ID = int(os.environ.get("API_ID", 38810606))
-API_HASH = os.environ.get("API_HASH", "ad5c6998fe3df082dfdf66f836d11b24")
+API_ID = int(os.environ.get("API_ID", "0") or "0")
+API_HASH = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
-PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "+16722019447")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8690367451:AAF1dc_lnPE1z0J7AeVDUV2kcU6SUXk1Q8U")
+PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 PORT = int(os.environ.get("PORT", 8080))
 SPOOKY_BOT = "@SpookyTimeBot"
 REQUEST_DELAY = 3
-UPDATE_INTERVAL = 5
+UPDATE_INTERVAL = 6
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_COMMANDS_FILE = os.path.join(DATA_DIR, "user_commands.json")
@@ -723,30 +724,32 @@ def sort_events(evs: list, sort_mode: str) -> list:
 
 
 def _clean_location(loc: str) -> str:
-    """Чистит координаты/варп от лишних пробелов и оборачивает значение
-    в моноширинный блок (` `) — в Telegram такой текст копируется одним тапом."""
+    """Чистит координаты/варп от лишних пробелов и оборачивает значение в
+    HTML <code> — в Telegram такой текст копируется одним тапом."""
     if not loc:
         return loc
     if ":" in loc:
         label, val = loc.split(":", 1)
         val = re.sub(r"\s+", " ", val).strip()
-        return f"{label.strip()}: `{val}`" if val else loc
+        if not val:
+            return html.escape(loc)
+        return f"{html.escape(label.strip())}: <code>{html.escape(val)}</code>"
     val = re.sub(r"\s+", " ", loc).strip()
-    return f"`{val}`" if val else loc
+    return f"<code>{html.escape(val)}</code>" if val else loc
 
 
 def format_one_event(e: dict, compact: bool = False, version: str = None) -> str:
     head = f"[{version}] " if version else ""
     if e.get("upcoming"):
-        return f"{head}Анархия {e['anarchy_num']}: ⏳ ивент через {e.get('next_in') or '?'}\n\n"
-    out = f"{head}Анархия {e['anarchy_num']}:\n{e['raw_first_line']}\n"
+        return f"{head}Анархия {e['anarchy_num']}: ⏳ ивент через {html.escape(str(e.get('next_in') or '?'))}\n\n"
+    out = f"{head}Анархия {e['anarchy_num']}:\n{html.escape(e['raw_first_line'])}\n"
     if not compact:
         if e.get("loot_level"):
-            out += f"Уровень лута: {e['loot_level']}\n"
+            out += f"Уровень лута: {html.escape(str(e['loot_level']))}\n"
         if e.get("status"):
-            out += f"Статус: {e['status']}"
+            out += f"Статус: {html.escape(str(e['status']))}"
             if e.get("time_str"):
-                out += f", {e['time_str']}"
+                out += f", {html.escape(str(e['time_str']))}"
             out += "\n"
     if e.get("location"):
         out += _clean_location(e["location"]) + "\n"
@@ -766,6 +769,7 @@ def format_events(evs: list, version: str, lang: str, type_name: str = None, com
 
 async def send_long(update: Update, text: str, keyboard=None):
     kwargs = {"reply_markup": keyboard} if keyboard else {}
+    kwargs["parse_mode"] = "HTML"
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
             await update.message.reply_text(text[i:i + 4000], **kwargs)
@@ -827,10 +831,10 @@ async def send_events_view(update, evs, version, settings, type_name, token):
     if len(text) > 4000:
         chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
         for c in chunks[:-1]:
-            await msg.reply_text(c)
-        await msg.reply_text(chunks[-1], reply_markup=kb)
+            await msg.reply_text(c, parse_mode="HTML")
+        await msg.reply_text(chunks[-1], reply_markup=kb, parse_mode="HTML")
     else:
-        await msg.reply_text(text, reply_markup=kb)
+        await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
 
 def _search_events(query: str, settings: dict):
@@ -1515,7 +1519,9 @@ async def keyboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Все доступные кнопки:*\n" + "\n".join(all_lines) + "\n\n"
         "Пришли ключи кнопок: *запятая* — кнопки в одном ряду, *точка с запятой* — новый ряд.\n"
         "Что не укажешь — будет *скрыто*.\n\n"
-        "Например:\n`events1, events2;\nfast1, fast2, fast3;\nsearch, settings`\n\n"
+        "Пример (каждый ключ можно скопировать тапом сверху):\n"
+        "`events1`, `events2` \\; `fast1`, `fast2`, `fast3` \\; `search`, `settings`\n"
+        "Это даст: ряд1 = events1, events2; ряд2 = fast1, fast2, fast3; ряд3 = search, settings.\n\n"
         "Сброс к стандарту: напиши `reset`."
     )
     context.user_data["awaiting_layout"] = True
@@ -1602,6 +1608,10 @@ async def run_web_server():
 # ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
 
 async def main():
+    missing = [n for n, v in [("BOT_TOKEN", BOT_TOKEN), ("API_ID", API_ID), ("API_HASH", API_HASH)] if not v]
+    if missing:
+        print(f"❌ Не заданы переменные окружения: {', '.join(missing)}. Добавь их в Railway → Variables.")
+        return
     session_str = (SESSION_STRING or "").strip().strip('"').strip("'")
     if not session_str:
         print("❌ SESSION_STRING пуст. Добавь строку сессии в Railway → Variables.")
