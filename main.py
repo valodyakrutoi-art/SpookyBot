@@ -25,8 +25,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8690367451:AAF1dc_lnPE1z0J7AeVDUV2kcU6S
 PORT = int(os.environ.get("PORT", 8080))
 SPOOKY_BOT = "@SpookyTimeBot"
 REQUEST_DELAY = 3
-UPDATE_INTERVAL = 6
-USER_COMMANDS_FILE = "user_commands.json"
+UPDATE_INTERVAL = 5
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+USER_COMMANDS_FILE = os.path.join(DATA_DIR, "user_commands.json")
 MAX_CUSTOM_COMMANDS = 5
 SUPPORT_USERNAME = "Xikik0mori"
 # ====================================================
@@ -326,7 +328,7 @@ TR = {
 # ==================== ГРУППОВОЙ ДОСТУП / ВРЕМЯ ОБНОВЛЕНИЯ ====================
 
 LAST_UPDATE = {"ts": None}
-ALLOW_FILE = "group_allow.json"
+ALLOW_FILE = os.path.join(DATA_DIR, "group_allow.json")
 
 
 def _load_allow():
@@ -527,19 +529,90 @@ def cmd_label(cmd: dict) -> str:
     return label
 
 
+def default_layout(cmds) -> list:
+    """Стандартный порядок ключей кнопок reply-клавиатуры."""
+    keys = ["events1", "events2", "help", "add", "del", "settings", "search"]
+    keys += [f"fast{i + 1}" for i in range(len(cmds))]
+    return keys
+
+
+def _btn_label(key: str, lang: str, cmds) -> str:
+    """Ключ кнопки -> подпись. None, если ключ невалиден."""
+    if key == "events1":
+        return "/events1"
+    if key == "events2":
+        return "/events2"
+    if key == "help":
+        return "/help"
+    if key == "add":
+        return t(lang, "btn_add")
+    if key == "del":
+        return t(lang, "btn_del")
+    if key == "settings":
+        return t(lang, "btn_settings")
+    if key == "search":
+        return t(lang, "btn_search")
+    if key.startswith("fast"):
+        try:
+            idx = int(key[4:]) - 1
+        except ValueError:
+            return None
+        if 0 <= idx < len(cmds):
+            return cmd_label(cmds[idx])
+    return None
+
+
+def default_layout_rows(cmds) -> list:
+    """Стандартная раскладка как список рядов (по 2 кнопки)."""
+    keys = default_layout(cmds)
+    return [keys[i:i + 2] for i in range(0, len(keys), 2)]
+
+
+def get_user_layout(user_id: int) -> list:
+    """Возвращает раскладку юзера как список рядов, отфильтрованную по валидным ключам.
+    Поддерживает старый формат (плоский список) и новый (список рядов)."""
+    settings = get_user_settings(user_id)
+    cmds = get_user_cmds(user_id)
+    layout = settings.get("layout")
+    valid = set(default_layout(cmds))
+    if not isinstance(layout, list) or not layout:
+        return default_layout_rows(cmds)
+    # старый формат: плоский список ключей -> по 2 в ряд
+    if all(isinstance(x, str) for x in layout):
+        flat = [k for k in layout if k in valid]
+        rows = [flat[i:i + 2] for i in range(0, len(flat), 2)]
+    else:
+        # новый формат: список рядов
+        rows = []
+        for row in layout:
+            if isinstance(row, list):
+                clean = [k for k in row if k in valid]
+                if clean:
+                    rows.append(clean)
+    # новые фаст-команды, которых ещё нет в раскладке, дописываем новым рядом
+    present = {k for row in rows for k in row}
+    extra = [k for k in default_layout(cmds) if k.startswith("fast") and k not in present]
+    for i in range(0, len(extra), 2):
+        rows.append(extra[i:i + 2])
+    return rows
+
+
+def layout_keys_flat(rows) -> list:
+    return [k for row in rows for k in row]
+
+
 def build_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     settings = get_user_settings(user_id)
     lang = settings["lang"]
     cmds = get_user_cmds(user_id)
-    rows = [
-        [KeyboardButton("/events1"), KeyboardButton("/events2")],
-        [KeyboardButton("/help"), KeyboardButton(t(lang, "btn_add"))],
-        [KeyboardButton(t(lang, "btn_del")), KeyboardButton(t(lang, "btn_settings"))],
-        [KeyboardButton(t(lang, "btn_search"))],
-    ]
-    custom_buttons = [KeyboardButton(cmd_label(c)) for c in cmds]
-    for i in range(0, len(custom_buttons), 2):
-        rows.append(custom_buttons[i:i + 2])
+    layout = get_user_layout(user_id)
+    rows = []
+    for row in layout:
+        btns = [KeyboardButton(_btn_label(k, lang, cmds)) for k in row if _btn_label(k, lang, cmds)]
+        if btns:
+            rows.append(btns)
+    if not rows:
+        rows = [[KeyboardButton("/settings")]]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 # ==================== ПАРСИНГ ИВЕНТОВ ====================
@@ -650,15 +723,16 @@ def sort_events(evs: list, sort_mode: str) -> list:
 
 
 def _clean_location(loc: str) -> str:
-    """Убирает лишние пробелы в координатах/варпе (в т.ч. в начале),
-    чтобы строка копировалась корректно."""
+    """Чистит координаты/варп от лишних пробелов и оборачивает значение
+    в моноширинный блок (` `) — в Telegram такой текст копируется одним тапом."""
     if not loc:
         return loc
     if ":" in loc:
         label, val = loc.split(":", 1)
         val = re.sub(r"\s+", " ", val).strip()
-        return f"{label.strip()}: {val}" if val else loc
-    return re.sub(r"\s+", " ", loc).strip()
+        return f"{label.strip()}: `{val}`" if val else loc
+    val = re.sub(r"\s+", " ", loc).strip()
+    return f"`{val}`" if val else loc
 
 
 def format_one_event(e: dict, compact: bool = False, version: str = None) -> str:
@@ -715,6 +789,7 @@ COMMANDS_HELP = (
     "• /newcommand — создать быструю команду\n"
     "• /delcommand — удалить быструю команду\n"
     "• /fastcommand1 … /fastcommand5 — запустить быструю команду №N\n"
+    "• /keyboard — настроить раскладку клавиатуры\n"
     "• /settings — настройки\n"
     "• /allow @username — выдать доступ в группе (для админов)\n"
     "• /help — справка"
@@ -1322,6 +1397,44 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_search"] = True
         await update.message.reply_text(t(lang, "search_prompt"))
         return
+    if context.user_data.get("awaiting_layout"):
+        context.user_data["awaiting_layout"] = False
+        user_id = update.effective_user.id
+        settings = get_user_settings(user_id)
+        lang = settings["lang"]
+        cmds = get_user_cmds(user_id)
+        raw = text.strip().lower()
+        if raw == "reset":
+            data = load_all()
+            entry = data.setdefault(str(user_id), {"commands": [], "settings": dict(DEFAULT_SETTINGS)})
+            entry["settings"].pop("layout", None)
+            save_all(data)
+            await update.message.reply_text("✅ Клавиатура сброшена к стандарту.",
+                                            reply_markup=build_main_keyboard(user_id))
+            return
+        valid = set(default_layout(cmds))
+        new_layout = []
+        seen = set()
+        for row_str in raw.split(";"):
+            row = []
+            for part in re.split(r"[\s,]+", row_str):
+                part = part.strip()
+                if part and part in valid and part not in seen:
+                    row.append(part)
+                    seen.add(part)
+            if row:
+                new_layout.append(row)
+        if not new_layout:
+            await update.message.reply_text("⚠️ Не распознал ни одного ключа. Попробуй ещё раз через /keyboard.")
+            return
+        data = load_all()
+        entry = data.setdefault(str(user_id), {"commands": [], "settings": dict(DEFAULT_SETTINGS)})
+        entry["settings"]["layout"] = new_layout
+        save_all(data)
+        await update.message.reply_text("✅ Клавиатура обновлена!",
+                                        reply_markup=build_main_keyboard(user_id))
+        return
+
     if context.user_data.get("awaiting_search"):
         context.user_data["awaiting_search"] = False
         return await do_search(update, context, text)
@@ -1375,6 +1488,38 @@ async def _run_cmd_index(update, context, idx):
     matched = cmds[idx]
     evs, version, types_label = _events_for_cmd(user_id, matched, settings)
     await send_events_view(update, evs, version, settings, types_label, f"c:{idx}")
+
+
+async def keyboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    lang = settings["lang"]
+    cmds = get_user_cmds(user_id)
+    layout = get_user_layout(user_id)
+    present = set(layout_keys_flat(layout))
+    # текущая раскладка (по рядам)
+    cur_lines = []
+    for row in layout:
+        labels = [_btn_label(k, lang, cmds) for k in row if _btn_label(k, lang, cmds)]
+        cur_lines.append("  " + ", ".join(f"{k}" for k in row) + "   →  [" + " | ".join(labels) + "]")
+    # все доступные ключи (включая скрытые)
+    all_lines = []
+    for key in default_layout(cmds):
+        label = _btn_label(key, lang, cmds)
+        if label:
+            mark = "" if key in present else " (скрыто)"
+            all_lines.append(f"  `{key}` — {label}{mark}")
+    msg = (
+        "*⌨️ Настройка клавиатуры*\n\n"
+        "*Сейчас:*\n" + ("\n".join(cur_lines) or "  (пусто)") + "\n\n"
+        "*Все доступные кнопки:*\n" + "\n".join(all_lines) + "\n\n"
+        "Пришли ключи кнопок: *запятая* — кнопки в одном ряду, *точка с запятой* — новый ряд.\n"
+        "Что не укажешь — будет *скрыто*.\n\n"
+        "Например:\n`events1, events2;\nfast1, fast2, fast3;\nsearch, settings`\n\n"
+        "Сброс к стандарту: напиши `reset`."
+    )
+    context.user_data["awaiting_layout"] = True
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1505,6 +1650,7 @@ async def main():
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("help", help_cmd))
     bot_app.add_handler(CommandHandler("search", search_cmd))
+    bot_app.add_handler(CommandHandler("keyboard", keyboard_cmd))
     bot_app.add_handler(CommandHandler("settings", settings_cmd))
     bot_app.add_handler(CommandHandler("newcommand", newcommand_cmd))
     bot_app.add_handler(CommandHandler("delcommand", delcommand_cmd))
@@ -1557,6 +1703,7 @@ async def main():
             BotCommand("fastcommand3", "Быстрая команда №3"),
             BotCommand("fastcommand4", "Быстрая команда №4"),
             BotCommand("fastcommand5", "Быстрая команда №5"),
+            BotCommand("keyboard", "Настроить клавиатуру"),
             BotCommand("settings", "Настройки"),
             BotCommand("help", "Справка"),
         ])
