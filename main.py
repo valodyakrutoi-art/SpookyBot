@@ -27,6 +27,10 @@ PORT = int(os.environ.get("PORT", 8080))
 SPOOKY_BOT = "@SpookyTimeBot"
 REQUEST_DELAY = 3
 UPDATE_INTERVAL = 6
+# Офф-бот SPOOKY_BOT принимает команду не чаще раза в 5 сек (антиспам).
+# Не отправляем /events чаще этого порога, иначе команды игнорируются/мьют.
+ANTISPAM_MIN_INTERVAL = 6
+EFFECTIVE_INTERVAL = max(UPDATE_INTERVAL, ANTISPAM_MIN_INTERVAL)
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 os.makedirs(DATA_DIR, exist_ok=True)
 USER_COMMANDS_FILE = os.path.join(DATA_DIR, "user_commands.json")
@@ -1632,6 +1636,7 @@ async def main():
 
     async def update_loop():
         while True:
+            cycle_start = time.time()
             try:
                 await user_client.send_message(SPOOKY_BOT, "/events")
                 await asyncio.sleep(REQUEST_DELAY)
@@ -1652,7 +1657,8 @@ async def main():
             except Exception as e:
                 print(f"❌ Ошибка опроса: {e}")
                 traceback.print_exc()
-            await asyncio.sleep(UPDATE_INTERVAL)
+            elapsed = time.time() - cycle_start
+            await asyncio.sleep(max(0.5, EFFECTIVE_INTERVAL - elapsed))
 
     asyncio.create_task(update_loop())
 
