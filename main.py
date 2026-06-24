@@ -1457,11 +1457,20 @@ async def run_web_server():
 # ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
 
 async def main():
-    user_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-    await user_client.connect()
+    session_str = (SESSION_STRING or "").strip().strip('"').strip("'")
+    if not session_str:
+        print("❌ SESSION_STRING пуст. Добавь строку сессии в Railway → Variables.")
+        return
+    print(f"🔑 Длина SESSION_STRING: {len(session_str)} символов")
+    try:
+        user_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+    except Exception as e:
+        print(f"❌ SESSION_STRING повреждён/обрезан ({e}). Сгенерируй строку заново и вставь ЦЕЛИКОМ одной строкой.")
+        return
 
+    await user_client.connect()
     if not await user_client.is_user_authorized():
-        print("❌ SESSION_STRING пуст или невалиден. Сгенерируй строку заново и добавь в Railway Variables.")
+        print("❌ Сессия не авторизована. Сгенерируй новую строку и обнови SESSION_STRING.")
         return
     _me = await user_client.get_me()
     print(f"✅ Userbot (Telethon) авторизован через SESSION_STRING как {_me.first_name}")
