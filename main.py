@@ -38,7 +38,7 @@ MAX_CUSTOM_COMMANDS = 5
 SUPPORT_USERNAME = "Xikik0mori"
 # ====================================================
 
-CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY, CHOOSE_NAME = range(5)
+CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY, CHOOSE_NAME, CHOOSE_COLOR = range(6)
 
 ANARCHY_TYPES = {
     "Соло": 1, "Дуо": 2, "Трио": 3,
@@ -382,6 +382,7 @@ _EXTRA_TR_RU = {
     "search_empty": "📭 Ничего не найдено по запросу: {q}",
     "search_header": "🔍 Результаты «{q}»:\n\n",
     "ask_name": "✏️ Введи название для команды (или «-» для авто):",
+    "ask_color": "🎨 Выбери цвет кнопки для этой команды:",
     "choose_rarities": "Выбери редкости (можно несколько):",
     "set_status": "📊 Статус: {val}",
     "status_both": "оба",
@@ -470,7 +471,7 @@ def set_user_setting(user_id: int, key: str, value):
     save_user_entry(user_id, entry)
 
 
-def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, rarity=None, name: str = None) -> bool:
+def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, rarity=None, name: str = None, style: str = None) -> bool:
     entry = get_user_entry(user_id)
     cmds = entry["commands"]
     if len(cmds) >= MAX_CUSTOM_COMMANDS:
@@ -488,6 +489,7 @@ def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, 
         "rarity": None,
         "rarities": rarities,
         "name": name or None,
+        "style": style or None,
     }
     for c in cmds:
         c_rar = c.get("rarities") or ([c["rarity"]] if c.get("rarity") else None)
@@ -606,6 +608,37 @@ def layout_keys_flat(rows) -> list:
     return [k for row in rows for k in row]
 
 
+# Цвета кнопок (Bot API 9.4+): success=зелёный, primary=синий, danger=красный
+BTN_STYLES = {
+    "events1": "success", "events2": "success", "search": "success",
+    "settings": "primary", "help": "primary",
+    "add": "danger", "del": "danger",
+}
+COLOR_NAMES = {"success": "🟢 Зелёный", "primary": "🔵 Синий", "danger": "🔴 Красный"}
+
+
+def _kbtn(text, style=None):
+    """KeyboardButton с цветом, с откатом если версия библиотеки не поддерживает style."""
+    if style:
+        try:
+            return KeyboardButton(text, style=style)
+        except TypeError:
+            pass
+    return KeyboardButton(text)
+
+
+def _btn_style(key, cmds):
+    if key.startswith("fast"):
+        try:
+            idx = int(key[4:]) - 1
+        except ValueError:
+            return None
+        if 0 <= idx < len(cmds):
+            return cmds[idx].get("style")
+        return None
+    return BTN_STYLES.get(key)
+
+
 def build_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     settings = get_user_settings(user_id)
     lang = settings["lang"]
@@ -613,7 +646,8 @@ def build_main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     layout = get_user_layout(user_id)
     rows = []
     for row in layout:
-        btns = [KeyboardButton(_btn_label(k, lang, cmds)) for k in row if _btn_label(k, lang, cmds)]
+        btns = [_kbtn(_btn_label(k, lang, cmds), _btn_style(k, cmds))
+                for k in row if _btn_label(k, lang, cmds)]
         if btns:
             rows.append(btns)
     if not rows:
@@ -651,7 +685,49 @@ def remove_hidden(evs: list, hidden: list) -> list:
     return [e for e in evs if _norm_name(e["name"]) not in hidden_set]
 
 
+def _parse_ru_duration(s):
+    """'1 мин 9 сек' / '2 ч 3 мин' / '45 сек' -> всего секунд (int) или None."""
+    if not s:
+        return None
+    total = 0
+    found = False
+    for val, unit in re.findall(r"(\d+)\s*(ч|час\w*|мин\w*|сек\w*|m|s|h)", s, re.IGNORECASE):
+        n = int(val)
+        u = unit.lower()
+        if u.startswith("ч") or u == "h":
+            total += n * 3600
+        elif u.startswith("м") or u == "m":
+            total += n * 60
+        else:
+            total += n
+        found = True
+    return total if found else None
+
+
+def _format_duration(sec):
+    sec = int(max(0, round(sec)))
+    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+    parts = []
+    if h:
+        parts.append(f"{h} ч")
+    if m:
+        parts.append(f"{m} мин")
+    parts.append(f"{s} сек")
+    return " ".join(parts)
+
+
+def _split_timer(time_str):
+    """'до деактивации: 1 мин 9 сек' -> ('до деактивации:', 69)."""
+    if not time_str:
+        return "", None
+    if ":" in time_str:
+        label, dur = time_str.rsplit(":", 1)
+        return label.strip() + ":", _parse_ru_duration(dur)
+    return "", _parse_ru_duration(time_str)
+
+
 def parse_events(text):
+    now = time.time()
     events = []
     pattern = r'Анархия (\d+):\s*(.*?)(?=Анархия \d+:|$)'
     for num_str, content in re.findall(pattern, text, re.DOTALL):
@@ -670,6 +746,8 @@ def parse_events(text):
                 "raw_first_line": "",
                 "upcoming": True,
                 "next_in": next_in,
+                "next_in_sec": _parse_ru_duration(next_in),
+                "fetched_at": now,
             })
             continue
         lines = content.strip().split("\n")
@@ -704,6 +782,9 @@ def parse_events(text):
             "loot_level": loot,
             "status": status,
             "time_str": time_str,
+            "timer_label": _split_timer(time_str)[0],
+            "timer_sec": _split_timer(time_str)[1],
+            "fetched_at": now,
             "location": location,
             "raw_first_line": first
         })
@@ -745,14 +826,25 @@ def _clean_location(loc: str) -> str:
 def format_one_event(e: dict, compact: bool = False, version: str = None) -> str:
     head = f"[{version}] " if version else ""
     if e.get("upcoming"):
-        return f"{head}Анархия {e['anarchy_num']}: ⏳ ивент через {html.escape(str(e.get('next_in') or '?'))}\n\n"
+        base = e.get("next_in_sec")
+        if base is not None and e.get("fetched_at"):
+            nxt = _format_duration(base - (time.time() - e["fetched_at"]))
+        else:
+            nxt = str(e.get("next_in") or "?")
+        return f"{head}Анархия {e['anarchy_num']}: ⏳ ивент через {html.escape(nxt)}\n\n"
     out = f"{head}Анархия {e['anarchy_num']}:\n{html.escape(e['raw_first_line'])}\n"
     if not compact:
         if e.get("loot_level"):
             out += f"Уровень лута: {html.escape(str(e['loot_level']))}\n"
         if e.get("status"):
             out += f"Статус: {html.escape(str(e['status']))}"
-            if e.get("time_str"):
+            base = e.get("timer_sec")
+            if base is not None and e.get("fetched_at"):
+                remaining = base - (time.time() - e["fetched_at"])
+                label = e.get("timer_label") or ""
+                ts = (label + " " if label else "") + _format_duration(remaining)
+                out += f", {html.escape(ts)}"
+            elif e.get("time_str"):
                 out += f", {html.escape(str(e['time_str']))}"
             out += "\n"
     if e.get("location"):
@@ -1193,19 +1285,38 @@ async def receive_cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_settings(user_id)["lang"]
     raw = (update.message.text or "").strip()
     name = None if raw in ("-", "") else raw[:40]
+    context.user_data["add_name"] = name
+    color_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 Зелёный", callback_data="cmdcolor:success"),
+         InlineKeyboardButton("🔵 Синий", callback_data="cmdcolor:primary")],
+        [InlineKeyboardButton("🔴 Красный", callback_data="cmdcolor:danger"),
+         InlineKeyboardButton("⚪ Без цвета", callback_data="cmdcolor:none")],
+    ])
+    await update.message.reply_text(t(lang, "ask_color"), reply_markup=color_kb)
+    return CHOOSE_COLOR
+
+
+async def receive_cmd_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    style = query.data.split(":", 1)[1]
+    style = None if style == "none" else style
     version = context.user_data.get("add_version")
     types_sel = list(context.user_data.get("add_types", set())) or None
     events_sel = list(context.user_data.get("add_events", set())) or None
     rarities_sel = sorted(context.user_data.get("add_rarities", set())) or None
-    ok = add_user_cmd(user_id, version, types_sel, events_sel, rarities_sel, name)
-    kb = build_main_keyboard(user_id)
+    name = context.user_data.get("add_name")
+    ok = add_user_cmd(user_id, version, types_sel, events_sel, rarities_sel, name, style)
     if ok:
         msg = t(lang, "cmd_added")
     elif len(get_user_cmds(user_id)) >= MAX_CUSTOM_COMMANDS:
         msg = t(lang, "cmd_limit", max=MAX_CUSTOM_COMMANDS)
     else:
         msg = t(lang, "cmd_exists")
-    await update.message.reply_text(msg, reply_markup=kb)
+    await query.edit_message_text(msg)
+    await query.message.reply_text("👇", reply_markup=build_main_keyboard(user_id))
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1685,6 +1796,7 @@ async def main():
             CHOOSE_EVENTS: [CallbackQueryHandler(choose_events_cb, pattern=r"^ev:")],
             CHOOSE_RARITY: [CallbackQueryHandler(choose_rarity_cb, pattern=r"^rar:")],
             CHOOSE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cmd_name)],
+            CHOOSE_COLOR: [CallbackQueryHandler(receive_cmd_color, pattern=r"^cmdcolor:")],
         },
         fallbacks=[
             MessageHandler(filters.TEXT & ~filters.COMMAND, cancel),
