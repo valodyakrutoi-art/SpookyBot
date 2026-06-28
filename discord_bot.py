@@ -491,7 +491,7 @@ class RunView(discord.ui.View):
         cmds = get_commands(interaction)
         i = int(self.select.values[0])
         if 0 <= i < len(cmds):
-            await interaction.response.send_message(run_custom_cmd(cmds[i], interaction))
+            await interaction.response.send_message(run_custom_cmd(cmds[i], interaction), ephemeral=True)
         else:
             await interaction.response.send_message("⚠️ Команда не найдена.", ephemeral=True)
 
@@ -528,14 +528,14 @@ async def on_ready():
 async def events1(interaction: discord.Interaction):
     if not has_access(interaction):
         return await deny(interaction)
-    await interaction.response.send_message(build_events_text(VERSION_4DIGIT, interaction))
+    await interaction.response.send_message(build_events_text(VERSION_4DIGIT, interaction), ephemeral=True)
 
 
 @tree.command(name="events2", description="События 1.21")
 async def events2(interaction: discord.Interaction):
     if not has_access(interaction):
         return await deny(interaction)
-    await interaction.response.send_message(build_events_text(VERSION_3DIGIT, interaction))
+    await interaction.response.send_message(build_events_text(VERSION_3DIGIT, interaction), ephemeral=True)
 
 
 @tree.command(name="search", description="Поиск события по названию")
@@ -543,7 +543,7 @@ async def events2(interaction: discord.Interaction):
 async def search(interaction: discord.Interaction, query: str):
     if not has_access(interaction):
         return await deny(interaction)
-    await interaction.response.send_message(search_text(query, interaction))
+    await interaction.response.send_message(search_text(query, interaction), ephemeral=True)
 
 
 @tree.command(name="newcommand", description="Создать быструю команду")
