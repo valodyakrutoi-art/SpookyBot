@@ -1822,32 +1822,40 @@ async def keyboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
-CHANGELOG = [
-    {
-        "date": "2026-06-28",
-        "title": "Цвета, эмодзи и аналитика",
-        "body": (
-            "• Цветные кнопки клавиатуры (зелёные/синие/красные)\n"
-            "• Выбор цвета и эмодзи при создании быстрой команды\n"
-            "• Множественное удаление команд с подтверждением\n"
-            "• Эмодзи на кнопках ивентов и помощи\n"
-            "• Новая раскладка клавиатуры по умолчанию\n"
-            "• Команда /changelog со списком обновлений\n"
-            "• Аналитика в /help (юзеры, запросы за день)"
-        ),
-    },
-    {
-        "date": "2026-06-24",
-        "title": "Точность и персистентность",
-        "body": (
-            "• Таймеры ивентов пересчитываются на лету (точность до секунды)\n"
-            "• Настройки и команды больше не сбрасываются после редеплоя\n"
-            "• Координаты копируются одним тапом\n"
-            "• Настройка раскладки клавиатуры (/keyboard)\n"
-            "• Слэш-команды для всех кнопок"
-        ),
-    },
-]
+def _load_changelog():
+    """Читает CHANGELOG.txt из репо. Формат блоков:
+    ## YYYY-MM-DD | Заголовок
+    • строка
+    • строка
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CHANGELOG.txt")
+    entries = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except Exception:
+        return entries
+    cur = None
+    for line in raw.splitlines():
+        if line.startswith("## "):
+            if cur:
+                cur["body"] = cur["body"].strip("\n")
+                entries.append(cur)
+            header = line[3:].strip()
+            if "|" in header:
+                date, title = header.split("|", 1)
+            else:
+                date, title = header, ""
+            cur = {"date": date.strip(), "title": title.strip(), "body": ""}
+        elif cur is not None:
+            cur["body"] += line + "\n"
+    if cur:
+        cur["body"] = cur["body"].strip("\n")
+        entries.append(cur)
+    return entries
+
+
+CHANGELOG = _load_changelog()
 
 
 def _changelog_page(idx: int):
