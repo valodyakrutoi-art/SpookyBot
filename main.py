@@ -335,6 +335,16 @@ TR = {
 LAST_UPDATE = {"ts": None}
 ALLOW_FILE = os.path.join(DATA_DIR, "group_allow.json")
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
+EVENTS_CACHE_FILE = os.path.join(DATA_DIR, "events_cache.json")
+
+
+def dump_events_cache():
+    """Сохраняет текущие события в общий файл, чтобы Discord-бот читал те же данные."""
+    try:
+        with open(EVENTS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"updated": time.time(), "events": events_data}, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ dump_events_cache: {e}")
 
 
 def _today():
@@ -1988,6 +1998,7 @@ async def main():
                         events_data[VERSION_3DIGIT].sort(key=lambda x: x["anarchy_num"])
                         LAST_UPDATE["ts"] = time.time()
                         print(f"🔄 Обновлено: {VERSION_4DIGIT} — {len(events_data[VERSION_4DIGIT])}, {VERSION_3DIGIT} — {len(events_data[VERSION_3DIGIT])}")
+                        dump_events_cache()
             except Exception as e:
                 print(f"❌ Ошибка опроса: {e}")
                 traceback.print_exc()
