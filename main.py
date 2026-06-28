@@ -38,7 +38,7 @@ MAX_CUSTOM_COMMANDS = 5
 SUPPORT_USERNAME = "Xikik0mori"
 # ====================================================
 
-CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY, CHOOSE_NAME, CHOOSE_COLOR = range(6)
+CHOOSE_VERSION, CHOOSE_TYPE, CHOOSE_EVENTS, CHOOSE_RARITY, CHOOSE_NAME, CHOOSE_EMOJI, CHOOSE_COLOR = range(7)
 
 ANARCHY_TYPES = {
     "Соло": 1, "Дуо": 2, "Трио": 3,
@@ -334,6 +334,64 @@ TR = {
 
 LAST_UPDATE = {"ts": None}
 ALLOW_FILE = os.path.join(DATA_DIR, "group_allow.json")
+STATS_FILE = os.path.join(DATA_DIR, "stats.json")
+
+
+def _today():
+    return time.strftime("%Y-%m-%d")
+
+
+def load_stats() -> dict:
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_stats(data: dict):
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def track(user_id: int, kind: str):
+    """kind: 'view' (выдан список ивентов) или 'search'."""
+    data = load_stats()
+    day = _today()
+    d = data.setdefault(day, {"users": [], "views": 0, "searches": 0})
+    if user_id not in d["users"]:
+        d["users"].append(user_id)
+    if kind == "view":
+        d["views"] = d.get("views", 0) + 1
+    elif kind == "search":
+        d["searches"] = d.get("searches", 0) + 1
+    # храним максимум 30 последних дней
+    for old in sorted(data.keys())[:-30]:
+        data.pop(old, None)
+    save_stats(data)
+
+
+def stats_summary() -> str:
+    data = load_stats()
+    today = data.get(_today(), {"users": [], "views": 0, "searches": 0})
+    total_users = set()
+    total_views = 0
+    for d in data.values():
+        total_users.update(d.get("users", []))
+        total_views += d.get("views", 0)
+    return (
+        "\n\n📊 *Статистика:*\n"
+        f"• Сегодня юзеров: {len(today.get('users', []))}\n"
+        f"• Сегодня выдано списков: {today.get('views', 0)}\n"
+        f"• Сегодня поисков: {today.get('searches', 0)}\n"
+        f"• Всего уникальных юзеров: {len(total_users)}\n"
+        f"• Всего выдано списков: {total_views}"
+    )
 
 
 def _load_allow():
@@ -383,6 +441,8 @@ _EXTRA_TR_RU = {
     "search_header": "🔍 Результаты «{q}»:\n\n",
     "ask_name": "✏️ Введи название для команды (или «-» для авто):",
     "ask_color": "🎨 Выбери цвет кнопки для этой команды:",
+    "ask_emoji": "😀 Выбери эмодзи для кнопки команды:",
+    "choose_del_multi": "🗑 Отметь команды для удаления и нажми «Удалить выбранные»:",
     "choose_rarities": "Выбери редкости (можно несколько):",
     "set_status": "📊 Статус: {val}",
     "status_both": "оба",
@@ -471,7 +531,7 @@ def set_user_setting(user_id: int, key: str, value):
     save_user_entry(user_id, entry)
 
 
-def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, rarity=None, name: str = None, style: str = None) -> bool:
+def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, rarity=None, name: str = None, style: str = None, emoji: str = None) -> bool:
     entry = get_user_entry(user_id)
     cmds = entry["commands"]
     if len(cmds) >= MAX_CUSTOM_COMMANDS:
@@ -490,6 +550,7 @@ def add_user_cmd(user_id: int, version: str, anarchy_types: list, events: list, 
         "rarities": rarities,
         "name": name or None,
         "style": style or None,
+        "emoji": emoji or None,
     }
     for c in cmds:
         c_rar = c.get("rarities") or ([c["rarity"]] if c.get("rarity") else None)
@@ -512,11 +573,26 @@ def delete_user_cmd(user_id: int, idx: int) -> bool:
         return True
     return False
 
+
+def delete_user_cmds(user_id: int, indices) -> int:
+    """Удаляет несколько команд по индексам. Возвращает число удалённых."""
+    entry = get_user_entry(user_id)
+    cmds = entry["commands"]
+    removed = 0
+    for idx in sorted(set(indices), reverse=True):
+        if 0 <= idx < len(cmds):
+            cmds.pop(idx)
+            removed += 1
+    entry["commands"] = cmds
+    save_user_entry(user_id, entry)
+    return removed
+
 # ==================== КЛАВИАТУРА ====================
 
 def cmd_label(cmd: dict) -> str:
     if cmd.get("name"):
-        return f"⭐ {cmd['name']}"
+        emoji = cmd.get("emoji")
+        return f"{emoji} {cmd['name']}" if emoji else cmd["name"]
     version = cmd.get("version", "")
     types = cmd.get("types") or cmd.get("type")  # совместимость со старым форматом
     if isinstance(types, list):
@@ -538,7 +614,7 @@ def cmd_label(cmd: dict) -> str:
 
 def default_layout(cmds) -> list:
     """Стандартный порядок ключей кнопок reply-клавиатуры."""
-    keys = ["events1", "events2", "help", "add", "del", "settings", "search"]
+    keys = ["events1", "events2", "search", "del", "add", "help", "settings", "changelog"]
     keys += [f"fast{i + 1}" for i in range(len(cmds))]
     return keys
 
@@ -546,11 +622,13 @@ def default_layout(cmds) -> list:
 def _btn_label(key: str, lang: str, cmds) -> str:
     """Ключ кнопки -> подпись. None, если ключ невалиден."""
     if key == "events1":
-        return "/events1"
+        return "🎯 /events1"
     if key == "events2":
-        return "/events2"
+        return "🚀 /events2"
     if key == "help":
-        return "/help"
+        return "🛡 /help"
+    if key == "changelog":
+        return "📋 /changelog"
     if key == "add":
         return t(lang, "btn_add")
     if key == "del":
@@ -570,9 +648,14 @@ def _btn_label(key: str, lang: str, cmds) -> str:
 
 
 def default_layout_rows(cmds) -> list:
-    """Стандартная раскладка как список рядов (по 2 кнопки)."""
-    keys = default_layout(cmds)
-    return [keys[i:i + 2] for i in range(0, len(keys), 2)]
+    """Стандартная раскладка по рядам."""
+    rows = [
+        ["events1", "events2", "search"],
+        ["del", "add"],
+        ["help", "settings", "changelog"],
+    ]
+    rows += [[f"fast{i + 1}"] for i in range(len(cmds))]
+    return rows
 
 
 def get_user_layout(user_id: int) -> list:
@@ -611,7 +694,7 @@ def layout_keys_flat(rows) -> list:
 # Цвета кнопок (Bot API 9.4+): success=зелёный, primary=синий, danger=красный
 BTN_STYLES = {
     "events1": "success", "events2": "success", "search": "success",
-    "settings": "primary", "help": "primary",
+    "settings": "primary", "help": "primary", "changelog": "primary",
     "add": "danger", "del": "danger",
 }
 COLOR_NAMES = {"success": "🟢 Зелёный", "primary": "🔵 Синий", "danger": "🔴 Красный"}
@@ -890,6 +973,7 @@ COMMANDS_HELP = (
     "• /delcommand — удалить быструю команду\n"
     "• /fastcommand1 … /fastcommand5 — запустить быструю команду №N\n"
     "• /keyboard — настроить раскладку клавиатуры\n"
+    "• /changelog — список обновлений\n"
     "• /settings — настройки\n"
     "• /allow @username — выдать доступ в группе (для админов)\n"
     "• /help — справка"
@@ -904,7 +988,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton(t(lang, "support_btn"), url=f"https://t.me/{SUPPORT_USERNAME}")
     ]])
     await update.message.reply_text(
-        t(lang, "help_text") + COMMANDS_HELP, parse_mode="Markdown", reply_markup=kb
+        t(lang, "help_text") + COMMANDS_HELP + stats_summary(), parse_mode="Markdown", reply_markup=kb
     )
     await update.message.reply_text(
         t(lang, "support_msg"), reply_markup=inline_kb
@@ -921,6 +1005,10 @@ def results_kb(token: str, lang: str) -> InlineKeyboardMarkup:
 
 async def send_events_view(update, evs, version, settings, type_name, token):
     lang = settings["lang"]
+    try:
+        track(update.effective_user.id, "view")
+    except Exception:
+        pass
     text = format_events(evs, version, lang, type_name, settings.get("compact", False))
     kb = results_kb(token, lang)
     msg = update.effective_message
@@ -958,6 +1046,10 @@ async def do_search(update, context, query):
     user_id = update.effective_user.id
     settings = get_user_settings(user_id)
     lang = settings["lang"]
+    try:
+        track(user_id, "search")
+    except Exception:
+        pass
     context.user_data["last_search"] = query
     results = _search_events(query, settings)
     if not results:
@@ -1286,13 +1378,28 @@ async def receive_cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = (update.message.text or "").strip()
     name = None if raw in ("-", "") else raw[:40]
     context.user_data["add_name"] = name
+    emojis = ["⭐", "🔥", "💎", "⚡", "🎯", "👑", "🌟", "💀", "🍀", "❤️"]
+    rows = []
+    for i in range(0, len(emojis), 5):
+        rows.append([InlineKeyboardButton(em, callback_data=f"cmdemoji:{em}") for em in emojis[i:i + 5]])
+    rows.append([InlineKeyboardButton("⚪ Без эмодзи", callback_data="cmdemoji:none")])
+    await update.message.reply_text(t(lang, "ask_emoji"), reply_markup=InlineKeyboardMarkup(rows))
+    return CHOOSE_EMOJI
+
+
+async def receive_cmd_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lang = get_user_settings(update.effective_user.id)["lang"]
+    emoji = query.data.split(":", 1)[1]
+    context.user_data["add_emoji"] = None if emoji == "none" else emoji
     color_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Зелёный", callback_data="cmdcolor:success"),
          InlineKeyboardButton("🔵 Синий", callback_data="cmdcolor:primary")],
         [InlineKeyboardButton("🔴 Красный", callback_data="cmdcolor:danger"),
          InlineKeyboardButton("⚪ Без цвета", callback_data="cmdcolor:none")],
     ])
-    await update.message.reply_text(t(lang, "ask_color"), reply_markup=color_kb)
+    await query.edit_message_text(t(lang, "ask_color"), reply_markup=color_kb)
     return CHOOSE_COLOR
 
 
@@ -1308,7 +1415,8 @@ async def receive_cmd_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     events_sel = list(context.user_data.get("add_events", set())) or None
     rarities_sel = sorted(context.user_data.get("add_rarities", set())) or None
     name = context.user_data.get("add_name")
-    ok = add_user_cmd(user_id, version, types_sel, events_sel, rarities_sel, name, style)
+    emoji = context.user_data.get("add_emoji")
+    ok = add_user_cmd(user_id, version, types_sel, events_sel, rarities_sel, name, style, emoji)
     if ok:
         msg = t(lang, "cmd_added")
     elif len(get_user_cmds(user_id)) >= MAX_CUSTOM_COMMANDS:
@@ -1353,6 +1461,17 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== УДАЛЕНИЕ БЫСТРОЙ КОМАНДЫ ====================
 
+def _del_keyboard(user_id, selected):
+    cmds = get_user_cmds(user_id)
+    rows = []
+    for i, c in enumerate(cmds):
+        mark = "✅ " if i in selected else "⬜ "
+        rows.append([InlineKeyboardButton(mark + cmd_label(c), callback_data=f"delcmd:toggle:{i}")])
+    rows.append([InlineKeyboardButton("🗑 Удалить выбранные", callback_data="delcmd:ask"),
+                 InlineKeyboardButton("❌ Отмена", callback_data="delcmd:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def delete_cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = get_user_settings(user_id)["lang"]
@@ -1360,8 +1479,9 @@ async def delete_cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not cmds:
         await update.message.reply_text(t(lang, "no_cmds_to_del"), reply_markup=build_main_keyboard(user_id))
         return
-    rows = [[InlineKeyboardButton(cmd_label(c), callback_data=f"delcmd:{i}")] for i, c in enumerate(cmds)]
-    await update.message.reply_text(t(lang, "choose_del"), reply_markup=InlineKeyboardMarkup(rows))
+    context.user_data["del_selected"] = set()
+    await update.message.reply_text(t(lang, "choose_del_multi"),
+                                    reply_markup=_del_keyboard(user_id, set()))
 
 
 async def delete_cmd_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1369,10 +1489,51 @@ async def delete_cmd_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = update.effective_user.id
     lang = get_user_settings(user_id)["lang"]
-    idx = int(query.data.split(":", 1)[1])
-    delete_user_cmd(user_id, idx)
-    await query.edit_message_text(t(lang, "cmd_deleted"))
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="👍", reply_markup=build_main_keyboard(user_id))
+    parts = query.data.split(":")
+    action = parts[1]
+    selected = context.user_data.get("del_selected", set())
+
+    if action == "toggle":
+        idx = int(parts[2])
+        if idx in selected:
+            selected.discard(idx)
+        else:
+            selected.add(idx)
+        context.user_data["del_selected"] = selected
+        await query.edit_message_reply_markup(reply_markup=_del_keyboard(user_id, selected))
+        return
+
+    if action == "cancel":
+        context.user_data.pop("del_selected", None)
+        await query.edit_message_text("❌ Отменено.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="👍",
+                                       reply_markup=build_main_keyboard(user_id))
+        return
+
+    if action == "ask":
+        if not selected:
+            await query.answer("Ничего не выбрано", show_alert=True)
+            return
+        confirm_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Да, удалить", callback_data="delcmd:do"),
+            InlineKeyboardButton("🔙 Назад", callback_data="delcmd:back"),
+        ]])
+        await query.edit_message_text(f"⚠️ Точно удалить выбранные команды ({len(selected)} шт.)?",
+                                      reply_markup=confirm_kb)
+        return
+
+    if action == "back":
+        await query.edit_message_text(t(lang, "choose_del_multi"),
+                                      reply_markup=_del_keyboard(user_id, selected))
+        return
+
+    if action == "do":
+        n = delete_user_cmds(user_id, selected)
+        context.user_data.pop("del_selected", None)
+        await query.edit_message_text(f"🗑 Удалено команд: {n}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="👍",
+                                       reply_markup=build_main_keyboard(user_id))
+        return
 
 # ==================== НАСТРОЙКИ ====================
 
@@ -1564,6 +1725,14 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await delete_cmd_start(update, context)
     if text == t(lang, "btn_settings"):
         return await settings_start(update, context)
+    if text == "🎯 /events1":
+        return await events1(update, context)
+    if text == "🚀 /events2":
+        return await events2(update, context)
+    if text == "🛡 /help":
+        return await help_cmd(update, context)
+    if text == "📋 /changelog":
+        return await changelog_cmd(update, context)
 
     cmds = get_user_cmds(user_id)
     matched = next((c for c in cmds if cmd_label(c) == text), None)
@@ -1641,6 +1810,60 @@ async def keyboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data["awaiting_layout"] = True
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+CHANGELOG = [
+    {
+        "date": "2026-06-28",
+        "title": "Цвета, эмодзи и аналитика",
+        "body": (
+            "• Цветные кнопки клавиатуры (зелёные/синие/красные)\n"
+            "• Выбор цвета и эмодзи при создании быстрой команды\n"
+            "• Множественное удаление команд с подтверждением\n"
+            "• Эмодзи на кнопках ивентов и помощи\n"
+            "• Новая раскладка клавиатуры по умолчанию\n"
+            "• Команда /changelog со списком обновлений\n"
+            "• Аналитика в /help (юзеры, запросы за день)"
+        ),
+    },
+    {
+        "date": "2026-06-24",
+        "title": "Точность и персистентность",
+        "body": (
+            "• Таймеры ивентов пересчитываются на лету (точность до секунды)\n"
+            "• Настройки и команды больше не сбрасываются после редеплоя\n"
+            "• Координаты копируются одним тапом\n"
+            "• Настройка раскладки клавиатуры (/keyboard)\n"
+            "• Слэш-команды для всех кнопок"
+        ),
+    },
+]
+
+
+def _changelog_page(idx: int):
+    idx = max(0, min(idx, len(CHANGELOG) - 1))
+    e = CHANGELOG[idx]
+    text = f"📋 *Обновление от {e['date']}*\n*{e['title']}*\n\n{e['body']}\n\n_Страница {idx + 1}/{len(CHANGELOG)}_"
+    btns = []
+    if idx < len(CHANGELOG) - 1:
+        btns.append(InlineKeyboardButton("⬅️ Старее", callback_data=f"chlog:{idx + 1}"))
+    if idx > 0:
+        btns.append(InlineKeyboardButton("Новее ➡️", callback_data=f"chlog:{idx - 1}"))
+    kb = InlineKeyboardMarkup([btns]) if btns else None
+    return text, kb
+
+
+async def changelog_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text, kb = _changelog_page(0)
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def changelog_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    idx = int(query.data.split(":", 1)[1])
+    text, kb = _changelog_page(idx)
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1778,6 +2001,8 @@ async def main():
     bot_app.add_handler(CommandHandler("help", help_cmd))
     bot_app.add_handler(CommandHandler("search", search_cmd))
     bot_app.add_handler(CommandHandler("keyboard", keyboard_cmd))
+    bot_app.add_handler(CommandHandler("changelog", changelog_cmd))
+    bot_app.add_handler(CallbackQueryHandler(changelog_cb, pattern=r"^chlog:"))
     bot_app.add_handler(CommandHandler("settings", settings_cmd))
     bot_app.add_handler(CommandHandler("newcommand", newcommand_cmd))
     bot_app.add_handler(CommandHandler("delcommand", delcommand_cmd))
@@ -1796,6 +2021,7 @@ async def main():
             CHOOSE_EVENTS: [CallbackQueryHandler(choose_events_cb, pattern=r"^ev:")],
             CHOOSE_RARITY: [CallbackQueryHandler(choose_rarity_cb, pattern=r"^rar:")],
             CHOOSE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cmd_name)],
+            CHOOSE_EMOJI: [CallbackQueryHandler(receive_cmd_emoji, pattern=r"^cmdemoji:")],
             CHOOSE_COLOR: [CallbackQueryHandler(receive_cmd_color, pattern=r"^cmdcolor:")],
         },
         fallbacks=[
@@ -1832,6 +2058,7 @@ async def main():
             BotCommand("fastcommand4", "Быстрая команда №4"),
             BotCommand("fastcommand5", "Быстрая команда №5"),
             BotCommand("keyboard", "Настроить клавиатуру"),
+            BotCommand("changelog", "Список обновлений"),
             BotCommand("settings", "Настройки"),
             BotCommand("help", "Справка"),
         ])
