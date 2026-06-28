@@ -1,4 +1,4 @@
-telethon
-python-telegram-bot
-tgcrypto
-aiohttp
+python-telegram-bot>=22.0
+telethon>=1.36.0
+aiohttp>=3.9.0
+
