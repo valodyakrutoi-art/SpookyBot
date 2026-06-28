@@ -8,6 +8,7 @@ from discord import app_commands
 
 # ==================== КОНФИГ ====================
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+DEV_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "").strip()
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 EVENTS_CACHE_FILE = os.path.join(DATA_DIR, "events_cache.json")
 DC_SETTINGS_FILE = os.path.join(DATA_DIR, "discord_settings.json")
@@ -503,11 +504,24 @@ tree = app_commands.CommandTree(client)
 
 @client.event
 async def on_ready():
+    print(f"✅ Discord-бот запущен как {client.user} (id={client.user.id})")
+    # Глобальная синхронизация — нужна для ЛС (появляется в течение ~1 ч)
     try:
-        await tree.sync()
+        g = await tree.sync()
+        print(f"🌍 Глобально синхронизировано {len(g)} команд (для ЛС, ~1 ч на распространение)")
     except Exception as e:
-        print(f"⚠️ sync: {e}")
-    print(f"✅ Discord-бот запущен как {client.user}")
+        print(f"⚠️ Ошибка глобальной синхронизации: {e}")
+    # Синхронизация на сервер — появляется мгновенно (только для этого сервера)
+    if DEV_GUILD_ID and DEV_GUILD_ID.isdigit():
+        try:
+            guild = discord.Object(id=int(DEV_GUILD_ID))
+            tree.copy_global_to(guild=guild)
+            s = await tree.sync(guild=guild)
+            print(f"⚡ На сервере {DEV_GUILD_ID} синхронизировано {len(s)} команд (мгновенно)")
+        except Exception as e:
+            print(f"⚠️ Ошибка серверной синхронизации: {e}")
+    else:
+        print("💡 Задай DISCORD_GUILD_ID, чтобы команды на сервере появились сразу (не ждать час).")
 
 
 @tree.command(name="events1", description="События 1.16.5")
