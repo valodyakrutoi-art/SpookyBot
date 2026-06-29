@@ -461,6 +461,13 @@ _EXTRA_TR_RU = {
     "set_compact": "🗜 Компактный: {val}",
     "on": "вкл",
     "off": "выкл",
+    "set_autoupdate": "🔄 Автообновление: {val}",
+    "set_audelay": "⏱ Интервал автообновления: {val} сек",
+    "audelay_prompt": "Введите интервал автообновления в секундах (минимум 6):",
+    "audelay_bad": "⚠️ Нужно число не меньше 6. Откройте настройки и попробуйте снова.",
+    "audelay_set": "✅ Интервал автообновления: {val} сек.",
+    "btn_stop_autoupdate": "⏹ Остановить автообновление",
+    "autoupdate_stopped": "Автообновление остановлено",
     "refreshed": "🔄 Обновлено!",
     "no_access": "🚫 Нет доступа. Попроси админа чата: /allow @username",
     "allow_ok": "✅ @{u} получил доступ в этом чате.",
@@ -479,7 +486,7 @@ def t(lang: str, key: str, **kwargs) -> str:
 
 # ==================== ХРАНИЛИЩЕ ====================
 
-DEFAULT_SETTINGS = {"sort": "anarchy", "lang": "RU", "hidden_events": [], "status_filter": "both", "compact": False}
+DEFAULT_SETTINGS = {"sort": "anarchy", "lang": "RU", "hidden_events": [], "status_filter": "both", "compact": False, "autoupdate": False, "autoupdate_delay": 6}
 
 
 def load_all() -> dict:
@@ -1007,28 +1014,36 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ПОИСК / ПОДЕЛИТЬСЯ / ОБНОВИТЬ / ДОСТУП ====================
 
-def results_kb(token: str, lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton(t(lang, "btn_refresh"), callback_data=f"refresh:{token}"),
-    ]])
+def results_kb(token: str, lang: str, autoupdate: bool = False) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(t(lang, "btn_refresh"), callback_data=f"refresh:{token}")]]
+    if autoupdate:
+        rows.append([InlineKeyboardButton(t(lang, "btn_stop_autoupdate"), callback_data=f"austop:{token}")])
+    return InlineKeyboardMarkup(rows)
 
 
-async def send_events_view(update, evs, version, settings, type_name, token):
+async def send_events_view(update, evs, version, settings, type_name, token, context=None):
     lang = settings["lang"]
     try:
         track(update.effective_user.id, "view")
     except Exception:
         pass
     text = format_events(evs, version, lang, type_name, settings.get("compact", False))
-    kb = results_kb(token, lang)
+    user_id = update.effective_user.id
+    au_on = (settings.get("autoupdate", False) and context is not None
+             and getattr(context, "job_queue", None) is not None)
+    kb = results_kb(token, lang, autoupdate=au_on)
     msg = update.effective_message
+    sent = None
     if len(text) > 4000:
         chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
         for c in chunks[:-1]:
             await msg.reply_text(c, parse_mode="HTML")
-        await msg.reply_text(chunks[-1], reply_markup=kb, parse_mode="HTML")
+        sent = await msg.reply_text(chunks[-1], reply_markup=kb, parse_mode="HTML")
     else:
-        await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
+        sent = await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
+    if au_on and sent is not None:
+        last_search = context.user_data.get("last_search", "") if hasattr(context, "user_data") else ""
+        _start_autoupdate(context, user_id, sent.chat_id, sent.message_id, token, last_search)
 
 
 def _search_events(query: str, settings: dict):
@@ -1095,9 +1110,8 @@ def _events_for_cmd(user_id, cmd, settings):
     return evs, version, type_label
 
 
-async def _render_token(update, context, token):
-    """Возвращает (text, version, lang) для refresh/share."""
-    user_id = update.effective_user.id
+def render_for_user(user_id, token, last_search=""):
+    """Синхронный рендер (text, lang) по токену — для refresh и автообновления."""
     settings = get_user_settings(user_id)
     lang = settings["lang"]
     kind, _, rest = token.partition(":")
@@ -1116,12 +1130,80 @@ async def _render_token(update, context, token):
             return format_events(evs, version, lang, type_label, settings.get("compact", False)), lang
         return t(lang, "no_events", label=""), lang
     if kind == "s":
-        q = context.user_data.get("last_search", "")
+        q = last_search
         results = _search_events(q, settings)
         if not results:
             return t(lang, "search_empty", q=q), lang
         return _format_search(results, q, lang, settings.get("compact", False)), lang
     return t(lang, "no_events", label=""), lang
+
+
+async def _render_token(update, context, token):
+    """Возвращает (text, lang) для refresh/share."""
+    user_id = update.effective_user.id
+    last_search = context.user_data.get("last_search", "")
+    return render_for_user(user_id, token, last_search)
+
+
+# ==================== АВТООБНОВЛЕНИЕ ====================
+def _stop_autoupdate(context, user_id):
+    if getattr(context, "job_queue", None) is None:
+        return
+    for job in context.job_queue.get_jobs_by_name(f"au_{user_id}"):
+        job.schedule_removal()
+
+
+def _start_autoupdate(context, user_id, chat_id, message_id, token, last_search=""):
+    if getattr(context, "job_queue", None) is None:
+        return
+    _stop_autoupdate(context, user_id)
+    settings = get_user_settings(user_id)
+    if not settings.get("autoupdate"):
+        return
+    delay = max(6, int(settings.get("autoupdate_delay", 6) or 6))
+    context.job_queue.run_repeating(
+        _autoupdate_job, interval=delay, first=delay, name=f"au_{user_id}",
+        data={"user_id": user_id, "chat_id": chat_id, "message_id": message_id,
+              "token": token, "last_search": last_search})
+
+
+async def _autoupdate_job(context):
+    data = context.job.data
+    user_id = data["user_id"]
+    settings = get_user_settings(user_id)
+    if not settings.get("autoupdate"):
+        context.job.schedule_removal()
+        return
+    try:
+        text, lang = render_for_user(user_id, data["token"], data.get("last_search", ""))
+        await context.bot.edit_message_text(
+            text[:4000], chat_id=data["chat_id"], message_id=data["message_id"],
+            reply_markup=results_kb(data["token"], lang, autoupdate=True), parse_mode="HTML")
+    except Exception as e:
+        msg = str(e).lower()
+        if "not modified" in msg:
+            return
+        if "not found" in msg or "can't be edited" in msg or "message to edit" in msg:
+            context.job.schedule_removal()
+
+
+async def austop_cb(update, context):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    lang = get_user_settings(user_id)["lang"]
+    set_user_setting(user_id, "autoupdate", False)
+    _stop_autoupdate(context, user_id)
+    token = query.data.split(":", 1)[1]
+    try:
+        text, lang = await _render_token(update, context, token)
+        await query.edit_message_text(text[:4000], reply_markup=results_kb(token, lang),
+                                      parse_mode="HTML")
+    except Exception:
+        pass
+    try:
+        await query.answer(t(lang, "autoupdate_stopped"))
+    except Exception:
+        pass
 
 
 async def refresh_cb(update, context):
@@ -1191,7 +1273,7 @@ async def events1(update: Update, context: ContextTypes.DEFAULT_TYPE):
     evs = remove_hidden(evs, settings.get("hidden_events", []))
     evs = sort_events(evs, settings["sort"])
     evs = apply_status_filter(evs, settings.get("status_filter", "both"))
-    await send_events_view(update, evs, VERSION_4DIGIT, settings, None, "v:" + VERSION_4DIGIT)
+    await send_events_view(update, evs, VERSION_4DIGIT, settings, None, "v:" + VERSION_4DIGIT, context)
 
 
 async def events2(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1203,7 +1285,7 @@ async def events2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     evs = remove_hidden(evs, settings.get("hidden_events", []))
     evs = sort_events(evs, settings["sort"])
     evs = apply_status_filter(evs, settings.get("status_filter", "both"))
-    await send_events_view(update, evs, VERSION_3DIGIT, settings, None, "v:" + VERSION_3DIGIT)
+    await send_events_view(update, evs, VERSION_3DIGIT, settings, None, "v:" + VERSION_3DIGIT, context)
 
 # ==================== ДОБАВЛЕНИЕ БЫСТРОЙ КОМАНДЫ ====================
 
@@ -1574,6 +1656,8 @@ def settings_kb(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(t(lang, "settings_hidden", val=hidden_label), callback_data="set:hidden")],
         [InlineKeyboardButton(t(lang, "set_status", val=t(lang, "status_" + settings.get("status_filter", "both"))), callback_data="set:status")],
         [InlineKeyboardButton(t(lang, "set_compact", val=t(lang, "on") if settings.get("compact") else t(lang, "off")), callback_data="set:compact")],
+        [InlineKeyboardButton(t(lang, "set_autoupdate", val=t(lang, "on") if settings.get("autoupdate") else t(lang, "off")), callback_data="set:autoupdate")],
+        [InlineKeyboardButton(t(lang, "set_audelay", val=max(6, int(settings.get("autoupdate_delay", 6) or 6))), callback_data="set:audelay")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -1610,6 +1694,20 @@ async def settings_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = get_user_settings(user_id).get("compact", False)
         set_user_setting(user_id, "compact", not cur)
         await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        return
+
+    if data == "set:autoupdate":
+        cur = get_user_settings(user_id).get("autoupdate", False)
+        set_user_setting(user_id, "autoupdate", not cur)
+        if cur:
+            _stop_autoupdate(context, user_id)
+        await query.edit_message_reply_markup(reply_markup=settings_kb(user_id))
+        return
+
+    if data == "set:audelay":
+        lang = get_user_settings(user_id)["lang"]
+        context.user_data["awaiting_audelay"] = True
+        await query.message.reply_text(t(lang, "audelay_prompt"))
         return
 
     if data == "set:sort":
@@ -1725,6 +1823,18 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                         reply_markup=build_main_keyboard(user_id))
         return
 
+    if context.user_data.get("awaiting_audelay"):
+        context.user_data["awaiting_audelay"] = False
+        lang = get_user_settings(update.effective_user.id)["lang"]
+        digits = re.sub(r"[^0-9]", "", text)
+        if not digits or int(digits) < 6:
+            await update.message.reply_text(t(lang, "audelay_bad"))
+            return
+        val = min(3600, int(digits))
+        set_user_setting(update.effective_user.id, "autoupdate_delay", val)
+        await update.message.reply_text(t(lang, "audelay_set", val=val))
+        return
+
     if context.user_data.get("awaiting_search"):
         context.user_data["awaiting_search"] = False
         return await do_search(update, context, text)
@@ -1773,7 +1883,7 @@ async def handle_custom_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     types_label = "+".join(matched["types"]) if matched.get("types") else matched.get("type", "")
     idx = cmds.index(matched)
-    await send_events_view(update, evs, version, settings, types_label, f"c:{idx}")
+    await send_events_view(update, evs, version, settings, types_label, f"c:{idx}", context)
 
 async def _run_cmd_index(update, context, idx):
     user_id = update.effective_user.id
@@ -1785,7 +1895,7 @@ async def _run_cmd_index(update, context, idx):
         return
     matched = cmds[idx]
     evs, version, types_label = _events_for_cmd(user_id, matched, settings)
-    await send_events_view(update, evs, version, settings, types_label, f"c:{idx}")
+    await send_events_view(update, evs, version, settings, types_label, f"c:{idx}", context)
 
 
 async def keyboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2055,6 +2165,7 @@ async def main():
     bot_app.add_handler(CallbackQueryHandler(settings_cb, pattern=r"^hideev:"))
     bot_app.add_handler(CommandHandler("allow", allow_cmd))
     bot_app.add_handler(CallbackQueryHandler(refresh_cb, pattern=r"^refresh:"))
+    bot_app.add_handler(CallbackQueryHandler(austop_cb, pattern=r"^austop:"))
 
     bot_app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,

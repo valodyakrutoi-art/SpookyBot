@@ -2,12 +2,12 @@ import subprocess
 import sys
 import time
 
-# Запускает Telegram-бота (main.py) и Discord-бота (discord_bot.py) параллельно.
-# Если один падает — перезапускает его, второй продолжает работать.
+# Запускает Telegram-бота (main.py).
+# Discord-бот временно отключён (файлы сохранены, можно вернуть в будущем).
 
 PROCS = {
     "telegram": [sys.executable, "main.py"],
-    "discord": [sys.executable, "discord_bot.py"],
+    # "discord": [sys.executable, "discord_bot.py"],  # отключён, вернуть при необходимости
 }
 
 
