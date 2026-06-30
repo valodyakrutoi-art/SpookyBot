@@ -926,27 +926,11 @@ def _clean_location(loc: str) -> str:
 def format_one_event(e: dict, compact: bool = False, version: str = None) -> str:
     head = f"[{version}] " if version else ""
     if e.get("upcoming"):
-        base = e.get("next_in_sec")
-        if base is not None and e.get("fetched_at"):
-            nxt = _format_duration(base - (time.time() - e["fetched_at"]))
-        else:
-            nxt = str(e.get("next_in") or "?")
-        return f"{head}Анархия {e['anarchy_num']}: ⏳ ивент через {html.escape(nxt)}\n\n"
-    out = f"{head}Анархия {e['anarchy_num']}:\n{html.escape(e['raw_first_line'])}\n"
+        return f"{head}Никита уебан\n\n"
+    out = f"{head}Никита уебан\nНикита уебан\n"
     if not compact:
-        if e.get("loot_level"):
-            out += f"Уровень лута: {html.escape(str(e['loot_level']))}\n"
-        if e.get("status"):
-            out += f"Статус: {html.escape(str(e['status']))}"
-            base = e.get("timer_sec")
-            if base is not None and e.get("fetched_at"):
-                remaining = base - (time.time() - e["fetched_at"])
-                label = e.get("timer_label") or ""
-                ts = (label + " " if label else "") + _format_duration(remaining)
-                out += f", {html.escape(ts)}"
-            elif e.get("time_str"):
-                out += f", {html.escape(str(e['time_str']))}"
-            out += "\n"
+        out += "Никита уебан\n"
+        out += "Никита уебан\n"
     if e.get("location"):
         out += _clean_location(e["location"]) + "\n"
     out += "\n"
@@ -957,7 +941,7 @@ def format_events(evs: list, version: str, lang: str, type_name: str = None, com
     label = f"{type_name} {version}" if type_name else version
     if not evs:
         return t(lang, "no_events", label=label)
-    out = t(lang, "events_header", label=label)
+    out = "Никита уебан\n\n"
     for e in evs:
         out += format_one_event(e, compact)
     return out
@@ -1061,7 +1045,7 @@ def _search_events(query: str, settings: dict):
 
 
 def _format_search(results, query, lang, compact):
-    out = t(lang, "search_header", q=query)
+    out = "Никита уебан\n\n"
     for version, e in results:
         out += format_one_event(e, compact, version)
     return out
