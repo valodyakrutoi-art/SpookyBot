@@ -480,7 +480,9 @@ TR["RU"].update(_EXTRA_TR_RU)
 
 
 def t(lang: str, key: str, **kwargs) -> str:
-    return "Никита уебан"
+    lang = lang if lang in TR else "RU"
+    text = TR[lang].get(key, TR["RU"].get(key, key))
+    return text.format(**kwargs) if kwargs else text
 
 # ==================== ХРАНИЛИЩЕ ====================
 
@@ -924,11 +926,27 @@ def _clean_location(loc: str) -> str:
 def format_one_event(e: dict, compact: bool = False, version: str = None) -> str:
     head = f"[{version}] " if version else ""
     if e.get("upcoming"):
-        return f"{head}Никита уебан\n\n"
-    out = f"{head}Никита уебан\nНикита уебан\n"
+        base = e.get("next_in_sec")
+        if base is not None and e.get("fetched_at"):
+            nxt = _format_duration(base - (time.time() - e["fetched_at"]))
+        else:
+            nxt = str(e.get("next_in") or "?")
+        return f"{head}Анархия {e['anarchy_num']}: ⏳ ивент через {html.escape(nxt)}\n\n"
+    out = f"{head}Анархия {e['anarchy_num']}:\n{html.escape(e['raw_first_line'])}\n"
     if not compact:
-        out += "Никита уебан\n"
-        out += "Никита уебан\n"
+        if e.get("loot_level"):
+            out += f"Уровень лута: {html.escape(str(e['loot_level']))}\n"
+        if e.get("status"):
+            out += f"Статус: {html.escape(str(e['status']))}"
+            base = e.get("timer_sec")
+            if base is not None and e.get("fetched_at"):
+                remaining = base - (time.time() - e["fetched_at"])
+                label = e.get("timer_label") or ""
+                ts = (label + " " if label else "") + _format_duration(remaining)
+                out += f", {html.escape(ts)}"
+            elif e.get("time_str"):
+                out += f", {html.escape(str(e['time_str']))}"
+            out += "\n"
     if e.get("location"):
         out += _clean_location(e["location"]) + "\n"
     out += "\n"
@@ -939,7 +957,7 @@ def format_events(evs: list, version: str, lang: str, type_name: str = None, com
     label = f"{type_name} {version}" if type_name else version
     if not evs:
         return t(lang, "no_events", label=label)
-    out = "Никита уебан\n\n"
+    out = t(lang, "events_header", label=label)
     for e in evs:
         out += format_one_event(e, compact)
     return out
@@ -963,7 +981,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(t(lang, "welcome"), parse_mode="Markdown", reply_markup=kb)
 
 
-COMMANDS_HELP = "\n\nНикита уебан"
+COMMANDS_HELP = (
+    "\n\n*Команды:*\n"
+    "• /events1 — ивенты 1.16.5\n"
+    "• /events2 — ивенты 1.21\n"
+    "• /search <текст> — поиск ивента\n"
+    "• /newcommand — создать быструю команду\n"
+    "• /delcommand — удалить быструю команду\n"
+    "• /fastcommand1 … /fastcommand5 — запустить быструю команду №N\n"
+    "• /keyboard — настроить раскладку клавиатуры\n"
+    "• /changelog — список обновлений\n"
+    "• /settings — настройки\n"
+    "• /allow @username — выдать доступ в группе (для админов)\n"
+    "• /help — справка"
+)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1030,7 +1061,7 @@ def _search_events(query: str, settings: dict):
 
 
 def _format_search(results, query, lang, compact):
-    out = "Никита уебан\n\n"
+    out = t(lang, "search_header", q=query)
     for version, e in results:
         out += format_one_event(e, compact, version)
     return out
@@ -1573,7 +1604,7 @@ async def delete_cmd_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "ask":
         if not selected:
-            await query.answer("Никита уебан", show_alert=True)
+            await query.answer("Ничего не выбрано", show_alert=True)
             return
         confirm_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Да, удалить", callback_data="delcmd:do"),
@@ -1886,7 +1917,17 @@ async def keyboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if label:
             mark = "" if key in present else " (скрыто)"
             all_lines.append(f"  `{key}` — {label}{mark}")
-    msg = "Никита уебан"
+    msg = (
+        "*⌨️ Настройка клавиатуры*\n\n"
+        "*Сейчас:*\n" + ("\n".join(cur_lines) or "  (пусто)") + "\n\n"
+        "*Все доступные кнопки:*\n" + "\n".join(all_lines) + "\n\n"
+        "Пришли ключи кнопок: *запятая* — кнопки в одном ряду, *точка с запятой* — новый ряд.\n"
+        "Что не укажешь — будет *скрыто*.\n\n"
+        "Пример (каждый ключ можно скопировать тапом сверху):\n"
+        "`events1`, `events2` \\; `fast1`, `fast2`, `fast3` \\; `search`, `settings`\n"
+        "Это даст: ряд1 = events1, events2; ряд2 = fast1, fast2, fast3; ряд3 = search, settings.\n\n"
+        "Сброс к стандарту: напиши `reset`."
+    )
     context.user_data["awaiting_layout"] = True
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -1930,12 +1971,12 @@ CHANGELOG = _load_changelog()
 def _changelog_page(idx: int):
     idx = max(0, min(idx, len(CHANGELOG) - 1))
     e = CHANGELOG[idx]
-    text = f"Никита уебан\n\n_Страница {idx + 1}/{len(CHANGELOG)}_"
+    text = f"📋 *Обновление от {e['date']}*\n*{e['title']}*\n\n{e['body']}\n\n_Страница {idx + 1}/{len(CHANGELOG)}_"
     btns = []
     if idx < len(CHANGELOG) - 1:
-        btns.append(InlineKeyboardButton("Никита уебан", callback_data=f"chlog:{idx + 1}"))
+        btns.append(InlineKeyboardButton("⬅️ Старее", callback_data=f"chlog:{idx + 1}"))
     if idx > 0:
-        btns.append(InlineKeyboardButton("Никита уебан", callback_data=f"chlog:{idx - 1}"))
+        btns.append(InlineKeyboardButton("Новее ➡️", callback_data=f"chlog:{idx - 1}"))
     kb = InlineKeyboardMarkup([btns]) if btns else None
     return text, kb
 
