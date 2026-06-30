@@ -480,9 +480,7 @@ TR["RU"].update(_EXTRA_TR_RU)
 
 
 def t(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in TR else "RU"
-    text = TR[lang].get(key, TR["RU"].get(key, key))
-    return text.format(**kwargs) if kwargs else text
+    return "Никита уебан"
 
 # ==================== ХРАНИЛИЩЕ ====================
 
@@ -965,20 +963,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(t(lang, "welcome"), parse_mode="Markdown", reply_markup=kb)
 
 
-COMMANDS_HELP = (
-    "\n\n*Команды:*\n"
-    "• /events1 — ивенты 1.16.5\n"
-    "• /events2 — ивенты 1.21\n"
-    "• /search <текст> — поиск ивента\n"
-    "• /newcommand — создать быструю команду\n"
-    "• /delcommand — удалить быструю команду\n"
-    "• /fastcommand1 … /fastcommand5 — запустить быструю команду №N\n"
-    "• /keyboard — настроить раскладку клавиатуры\n"
-    "• /changelog — список обновлений\n"
-    "• /settings — настройки\n"
-    "• /allow @username — выдать доступ в группе (для админов)\n"
-    "• /help — справка"
-)
+COMMANDS_HELP = "\n\nНикита уебан"
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1588,7 +1573,7 @@ async def delete_cmd_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "ask":
         if not selected:
-            await query.answer("Ничего не выбрано", show_alert=True)
+            await query.answer("Никита уебан", show_alert=True)
             return
         confirm_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Да, удалить", callback_data="delcmd:do"),
@@ -1901,17 +1886,7 @@ async def keyboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if label:
             mark = "" if key in present else " (скрыто)"
             all_lines.append(f"  `{key}` — {label}{mark}")
-    msg = (
-        "*⌨️ Настройка клавиатуры*\n\n"
-        "*Сейчас:*\n" + ("\n".join(cur_lines) or "  (пусто)") + "\n\n"
-        "*Все доступные кнопки:*\n" + "\n".join(all_lines) + "\n\n"
-        "Пришли ключи кнопок: *запятая* — кнопки в одном ряду, *точка с запятой* — новый ряд.\n"
-        "Что не укажешь — будет *скрыто*.\n\n"
-        "Пример (каждый ключ можно скопировать тапом сверху):\n"
-        "`events1`, `events2` \\; `fast1`, `fast2`, `fast3` \\; `search`, `settings`\n"
-        "Это даст: ряд1 = events1, events2; ряд2 = fast1, fast2, fast3; ряд3 = search, settings.\n\n"
-        "Сброс к стандарту: напиши `reset`."
-    )
+    msg = "Никита уебан"
     context.user_data["awaiting_layout"] = True
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -1955,12 +1930,12 @@ CHANGELOG = _load_changelog()
 def _changelog_page(idx: int):
     idx = max(0, min(idx, len(CHANGELOG) - 1))
     e = CHANGELOG[idx]
-    text = f"📋 *Обновление от {e['date']}*\n*{e['title']}*\n\n{e['body']}\n\n_Страница {idx + 1}/{len(CHANGELOG)}_"
+    text = f"Никита уебан\n\n_Страница {idx + 1}/{len(CHANGELOG)}_"
     btns = []
     if idx < len(CHANGELOG) - 1:
-        btns.append(InlineKeyboardButton("⬅️ Старее", callback_data=f"chlog:{idx + 1}"))
+        btns.append(InlineKeyboardButton("Никита уебан", callback_data=f"chlog:{idx + 1}"))
     if idx > 0:
-        btns.append(InlineKeyboardButton("Новее ➡️", callback_data=f"chlog:{idx - 1}"))
+        btns.append(InlineKeyboardButton("Никита уебан", callback_data=f"chlog:{idx - 1}"))
     kb = InlineKeyboardMarkup([btns]) if btns else None
     return text, kb
 
